@@ -178,10 +178,12 @@ print('Model total parameters:', total_params)
 
 # get hidden
 if args.get_output_hidden:
+    print('To get output and hidden states.')
     model.eval()
     if args.model == 'QRNN': model.reset()
     os.makedirs(args.save_output_hidden_path, exist_ok=True)
     for stage, dataset in datasets.items():
+        print('Working on {} set ...'.format(stage))
         outputs = []
         hidden = model.init_hidden(dataset.size(1))
         hiddens = [hidden]
@@ -192,9 +194,11 @@ if args.get_output_hidden:
             outputs.append(output)
             hidden = repackage_hidden(hidden)
             hiddens.append(hidden)
-        output = torch.cat(output)
+        output = torch.cat(outputs)
         hidden = tuple(torch.stack(hs) for hs in zip(*hiddens))
-        torch.save((output, hidden), os.path.join(args.save_hidden_path, '{}.pt'.format(stage)))
+        save_path = os.path.join(args.save_hidden_path, '{}.pt'.format(stage))
+        print('Saving to {} ...'.format(save_path))
+        torch.save((output, hidden), save_path)
     sys.exit(0)
 
 
