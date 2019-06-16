@@ -13,7 +13,7 @@ from utils import batchify, get_batch, repackage_hidden
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
 parser.add_argument('--data', type=str, default='data/penn/',
                     help='location of the data corpus')
-parser.add_argument('--model', type=str, default='LSTM',
+parser.add_argument('--model', type=str, default='LSTM', choices=['LSTM', 'QRNN', 'GRU'],
                     help='type of recurrent net (LSTM, QRNN, GRU)')
 parser.add_argument('--emsize', type=int, default=400,
                     help='size of word embeddings')
@@ -41,10 +41,12 @@ parser.add_argument('--dropoute', type=float, default=0.1,
                     help='dropout to remove words from embedding layer (0 = no dropout)')
 parser.add_argument('--wdrop', type=float, default=0.5,
                     help='amount of weight dropout to apply to the RNN hidden to hidden matrix')
+parser.add_argument('--tied', action='store_false',
+                    help='tie the word embedding and softmax weights')
 parser.add_argument('--seed', type=int, default=1111,
-                    help='random seed')
+                    help='random seed. default to 1111.')
 parser.add_argument('--nonmono', type=int, default=5,
-                    help='random seed')
+                    help='nonmono')
 parser.add_argument('--cuda', action='store_false',
                     help='use CUDA')
 parser.add_argument('--log-interval', type=int, default=200, metavar='N',
@@ -60,12 +62,11 @@ parser.add_argument('--wdecay', type=float, default=1.2e-6,
                     help='weight decay applied to all weights')
 parser.add_argument('--resume', type=str,  default='',
                     help='path of model to resume')
-parser.add_argument('--optimizer', type=str,  default='sgd',
+parser.add_argument('--optimizer', type=str,  default='sgd', choices=['sgd', 'adam'],
                     help='optimizer to use (sgd, adam)')
 parser.add_argument('--when', nargs="+", type=int, default=[-1],
                     help='When (which epochs) to divide the learning rate by 10 - accepts multiple')
 args = parser.parse_args()
-args.tied = True
 
 # Set the random seed manually for reproducibility.
 np.random.seed(args.seed)
@@ -141,8 +142,8 @@ if not criterion:
     criterion = SplitCrossEntropyLoss(args.emsize, splits=splits, verbose=False)
 ###
 if args.cuda:
-    model = model.cuda()
-    criterion = criterion.cuda()
+    model.cuda()
+    criterion.cuda()
 ###
 params = list(model.parameters()) + list(criterion.parameters())
 total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in params if x.size())
@@ -224,8 +225,8 @@ def train():
 
 # Loop over epochs.
 lr = args.lr
+stored_loss = evaluate(val_data)
 best_val_loss = []
-stored_loss = 100000000
 
 # At any point you can hit Ctrl + C to break out of training early.
 try:
@@ -233,7 +234,7 @@ try:
     # Ensure the optimizer is optimizing params, which includes both the model's weights as well as the criterion's weight (i.e. Adaptive Softmax)
     if args.optimizer == 'sgd':
         optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
-    if args.optimizer == 'adam':
+    elif args.optimizer == 'adam':
         optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
