@@ -1,3 +1,5 @@
+import os
+import sys
 import argparse
 import time
 import math
@@ -28,7 +30,11 @@ parser.add_argument('--clip', type=float, default=0.25,
 parser.add_argument('--epochs', type=int, default=8000,
                     help='upper epoch limit')
 parser.add_argument('--batch_size', type=int, default=80, metavar='N',
-                    help='batch size')
+                    help='train batch size')
+parser.add_argument('--eval_batch_size', type=int, default=10,
+                    help='eval batch size')
+parser.add_argument('--test_batch_size', type=int, default=1,
+                    help='test batch size')
 parser.add_argument('--bptt', type=int, default=70,
                     help='sequence length')
 parser.add_argument('--dropout', type=float, default=0.4,
@@ -66,6 +72,10 @@ parser.add_argument('--optimizer', type=str,  default='sgd', choices=['sgd', 'ad
                     help='optimizer to use (sgd, adam)')
 parser.add_argument('--when', nargs="+", type=int, default=[-1],
                     help='When (which epochs) to divide the learning rate by 10 - accepts multiple')
+parser.add_argument('--get_output_hidden', action='store_true',
+                    help='whether to get output and hidden states')
+parser.add_argument('--save_output_hidden_path', type=str, default='output_hidden',
+                    help='path to save output and hidden states')
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
@@ -101,11 +111,22 @@ else:
     corpus = data.Corpus(args.data)
     torch.save(corpus, fn)
 
-eval_batch_size = 10
-test_batch_size = 1
-train_data = batchify(corpus.train, args.batch_size, args)
+if args.get_output_hidden:
+    train_batch_size = 1
+    eval_batch_size = 1
+    test_batch_size = 1
+else:
+    train_batch_size = args.batch_size
+    eval_batch_size = args.eval_batch_size
+    test_batch_size = args.test_batch_size
+train_data = batchify(corpus.train, train_batch_size, args)
 val_data = batchify(corpus.valid, eval_batch_size, args)
 test_data = batchify(corpus.test, test_batch_size, args)
+datasets = {
+    'train': train_data,
+    'valid': val_data,
+    'test': test_data,
+}
 
 ###############################################################################
 # Build the model
@@ -154,7 +175,30 @@ print('Model total parameters:', total_params)
 # Training code
 ###############################################################################
 
-def evaluate(data_source, batch_size=10):
+
+# get hidden
+if args.get_output_hidden:
+    model.eval()
+    if args.model == 'QRNN': model.reset()
+    os.makedirs(args.save_output_hidden_path, exist_ok=True)
+    for stage, dataset in datasets.items():
+        outputs = []
+        hidden = model.init_hidden(dataset.size(1))
+        hiddens = [hidden]
+        for i in range(0, dataset.size(0) - 1, 1):
+            data, targets = get_batch(dataset, i, args, seq_len=1, evaluation=True)
+            output, hidden = model(data, hidden)
+            output = output.detach()
+            outputs.append(output)
+            hidden = repackage_hidden(hidden)
+            hiddens.append(hidden)
+        output = torch.cat(output)
+        hidden = tuple(torch.stack(hs) for hs in zip(*hiddens))
+        torch.save((output, hidden), os.path.join(args.save_hidden_path, '{}.pt'.format(stage)))
+    sys.exit(0)
+
+
+def evaluate(data_source, batch_size):
     # Turn on evaluation mode which disables dropout.
     model.eval()
     if args.model == 'QRNN': model.reset()
@@ -175,7 +219,7 @@ def train():
     total_loss = 0
     start_time = time.time()
     ntokens = len(corpus.dictionary)
-    hidden = model.init_hidden(args.batch_size)
+    hidden = model.init_hidden(train_batch_size)
     batch, i = 0, 0
     while i < train_data.size(0) - 1 - 1:
         bptt = args.bptt if np.random.random() < 0.95 else args.bptt / 2.
@@ -225,7 +269,7 @@ def train():
 
 # Loop over epochs.
 lr = args.lr
-stored_loss = evaluate(val_data)
+stored_loss = evaluate(val_data, eval_batch_size)
 best_val_loss = []
 
 # At any point you can hit Ctrl + C to break out of training early.
@@ -245,7 +289,7 @@ try:
                 tmp[prm] = prm.data.clone()
                 prm.data = optimizer.state[prm]['ax'].clone()
 
-            val_loss2 = evaluate(val_data)
+            val_loss2 = evaluate(val_data, eval_batch_size)
             print('-' * 89)
             print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | '
                 'valid ppl {:8.2f} | valid bpc {:8.3f}'.format(
