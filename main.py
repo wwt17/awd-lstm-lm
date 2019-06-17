@@ -2,6 +2,8 @@ import os
 import sys
 import argparse
 import time
+from tqdm import tqdm
+import h5py
 import math
 import numpy as np
 import torch
@@ -177,29 +179,44 @@ print('Model total parameters:', total_params)
 
 
 # get hidden
+def all_output_hidden(dataset):
+    with torch.no_grad():
+        hidden = model.init_hidden(dataset.size(1))
+        for i in tqdm(range(0, dataset.size(0) - 1, 1)):
+            data, targets = get_batch(dataset, i, args, seq_len=1, evaluation=True)
+            output, hidden = model(data, hidden)
+            output = output.detach()
+            hidden = repackage_hidden(hidden)
+            yield output.squeeze(0), hidden
+
+
 if args.get_output_hidden:
     print('To get output and hidden states.')
     model.eval()
     if args.model == 'QRNN': model.reset()
+    ninp = args.emsize
+    nhid = args.nhid
+    nlayers = args.nlayers
+    tie_weights = args.tied
     os.makedirs(args.save_output_hidden_path, exist_ok=True)
-    with torch.no_grad():
-        for stage, dataset in datasets.items():
-            print('Working on {} set ...'.format(stage))
-            outputs = []
-            hidden = model.init_hidden(dataset.size(1))
-            hiddens = [map_structure(torch.Tensor.cpu, hidden)]
-            for i in range(0, dataset.size(0) - 1, 1):
-                data, targets = get_batch(dataset, i, args, seq_len=1, evaluation=True)
-                output, hidden = model(data, hidden)
-                output = output.detach()
-                outputs.append(output.cpu())
-                hidden = repackage_hidden(hidden)
-                hiddens.append(map_structure(torch.Tensor.cpu, hidden))
-            output = torch.cat(outputs)
-            hidden = tuple(torch.stack(hs) for hs in zip(*hiddens))
-            save_path = os.path.join(args.save_hidden_path, '{}.pt'.format(stage))
-            print('Saving to {} ...'.format(save_path))
-            torch.save((output, hidden), save_path)
+    for stage, dataset in datasets.items():
+        print('Working on {} set ...'.format(stage))
+        save_path = os.path.join(args.save_output_hidden_path, '{}.h5py'.format(stage))
+        with h5py.File(save_path, 'w') as f:
+            n = dataset.size(0) - 1
+            last_size = ninp if tie_weights else nhid
+            m_output = f.create_dataset('output', (n, last_size), dtype='f')
+            m_hidden = []
+            for l in range(nlayers):
+                grp = f.create_group('hidden/{}'.format(l))
+                size = nhid if l != nlayers -1 else last_size
+                m_h = grp.create_dataset('h', (n, 1, 1, size), dtype='f')
+                m_c = grp.create_dataset('c', (n, 1, 1, size), dtype='f')
+                m_hidden.append((m_h, m_c))
+            for i, (output, hidden) in enumerate(all_output_hidden(dataset)):
+                def write(t, m):
+                    m[i] = t
+                map_structure(write, (output, hidden), (m_output, m_hidden))
     sys.exit(0)
 
 

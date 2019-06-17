@@ -1,11 +1,11 @@
 import torch
 
 
-def map_structure(f, s):
-    if isinstance(s, torch.Tensor):
-        return f(s)
+def map_structure(f, *s):
+    if isinstance(s[0], torch.Tensor):
+        return f(*s)
     else:
-        return type(s)(map_structure(f, c) for c in s)
+        return type(s[0])(map_structure(f, *c) for c in zip(*s))
 
 
 def repackage_hidden(h):
