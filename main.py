@@ -10,7 +10,7 @@ import torch.nn as nn
 import data
 import model
 
-from utils import batchify, get_batch, repackage_hidden
+from utils import batchify, get_batch, repackage_hidden, map_structure
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
 parser.add_argument('--data', type=str, default='data/penn/',
@@ -182,23 +182,24 @@ if args.get_output_hidden:
     model.eval()
     if args.model == 'QRNN': model.reset()
     os.makedirs(args.save_output_hidden_path, exist_ok=True)
-    for stage, dataset in datasets.items():
-        print('Working on {} set ...'.format(stage))
-        outputs = []
-        hidden = model.init_hidden(dataset.size(1))
-        hiddens = [hidden]
-        for i in range(0, dataset.size(0) - 1, 1):
-            data, targets = get_batch(dataset, i, args, seq_len=1, evaluation=True)
-            output, hidden = model(data, hidden)
-            output = output.detach()
-            outputs.append(output)
-            hidden = repackage_hidden(hidden)
-            hiddens.append(hidden)
-        output = torch.cat(outputs)
-        hidden = tuple(torch.stack(hs) for hs in zip(*hiddens))
-        save_path = os.path.join(args.save_hidden_path, '{}.pt'.format(stage))
-        print('Saving to {} ...'.format(save_path))
-        torch.save((output, hidden), save_path)
+    with torch.no_grad():
+        for stage, dataset in datasets.items():
+            print('Working on {} set ...'.format(stage))
+            outputs = []
+            hidden = model.init_hidden(dataset.size(1))
+            hiddens = [hidden]
+            for i in range(0, dataset.size(0) - 1, 1):
+                data, targets = get_batch(dataset, i, args, seq_len=1, evaluation=True)
+                output, hidden = model(data, hidden)
+                output = output.detach()
+                outputs.append(output.cpu())
+                hidden = repackage_hidden(hidden)
+                hiddens.append(map_structure(torch.Tensor.cpu, hidden))
+            output = torch.cat(outputs)
+            hidden = tuple(torch.stack(hs) for hs in zip(*hiddens))
+            save_path = os.path.join(args.save_hidden_path, '{}.pt'.format(stage))
+            print('Saving to {} ...'.format(save_path))
+            torch.save((output, hidden), save_path)
     sys.exit(0)
 
 

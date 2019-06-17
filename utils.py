@@ -1,13 +1,17 @@
 import torch
 
 
+def map_structure(f, s):
+    if isinstance(s, torch.Tensor):
+        return f(s)
+    else:
+        return type(s)(map_structure(f, c) for c in s)
+
+
 def repackage_hidden(h):
     """Wraps hidden states in new Tensors,
     to detach them from their history."""
-    if isinstance(h, torch.Tensor):
-        return h.detach()
-    else:
-        return tuple(repackage_hidden(v) for v in h)
+    return map_structure(torch.Tensor.detach, h)
 
 
 def batchify(data, bsz, args):
