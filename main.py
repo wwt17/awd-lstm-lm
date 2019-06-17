@@ -187,7 +187,7 @@ if args.get_output_hidden:
             print('Working on {} set ...'.format(stage))
             outputs = []
             hidden = model.init_hidden(dataset.size(1))
-            hiddens = [hidden]
+            hiddens = [map_structure(torch.Tensor.cpu, hidden)]
             for i in range(0, dataset.size(0) - 1, 1):
                 data, targets = get_batch(dataset, i, args, seq_len=1, evaluation=True)
                 output, hidden = model(data, hidden)
