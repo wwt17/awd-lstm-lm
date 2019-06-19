@@ -171,6 +171,8 @@ decoder = approximated_model.decoder
 embedding_size = encoder.weight.size(1)
 hidden_size = args.hidden_size
 target_size = get_target_size()
+print('embedding_size={} hidden_size={} target_size={}'.format(
+    embedding_size, hidden_size, target_size))
 
 model = MLP_Approximator(context_size, embedding_size, hidden_size, target_size,
     args.input_dropout, args.hidden_dropout, args.output_dropout,
