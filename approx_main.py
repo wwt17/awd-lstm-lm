@@ -268,7 +268,7 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
             torch.nn.utils.clip_grad_norm_(params, args.clip)
         optimizer.step()
 
-        total_loss += len(snippet) * loss.item()
+        total_loss += loss.item()
 
         if (i_batch + 1) % args.log_interval == 0:
             mean_loss = total_loss / args.log_interval
