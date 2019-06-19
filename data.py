@@ -1,8 +1,14 @@
 import os
 import torch
+from torch.utils.data import Dataset
+import h5py
 
 from collections import Counter
 
+from utils import map_structure
+
+
+eos_token = '<eos>'
 
 class Dictionary(object):
     def __init__(self):
@@ -22,6 +28,10 @@ class Dictionary(object):
 
     def __len__(self):
         return len(self.idx2word)
+
+    @property
+    def eos_id(self):
+        return self.word2idx[eos_token]
 
 
 class Corpus(object):
@@ -54,3 +64,29 @@ class Corpus(object):
                     token += 1
 
         return ids
+
+
+class HiddenStateDataset(Dataset):
+    def __init__(self, seq, hidden_state_h5py, context_size, pad_id):
+        self.context_size = context_size
+        self.seq = torch.cat([torch.full((context_size - 1,), pad_id, dtype=torch.long), seq])
+        self.hidden_state_h5py = h5py.File(hidden_state_h5py, 'r')
+        self.output = self.hidden_state_h5py['output']
+        grp_hidden = self.hidden_state_h5py['hidden']
+        self.hidden = []
+        for l in range(len(grp_hidden)):
+            grp_layer = grp_hidden[str(l)]
+            self.hidden.append((grp_layer['c'], grp_layer['h']))
+        self.states = (self.output, self.hidden)
+
+    def __len__(self):
+        return self.output.shape[0]
+
+    def __getitem__(self, i):
+        snippet = self.seq[i : self.context_size + i]
+        states = map_structure(lambda state: torch.tensor(state[i]), self.states)
+        return snippet, states
+
+
+def collate_fn(batch):
+    return map_structure(lambda *batch: torch.stack(batch), *batch)
