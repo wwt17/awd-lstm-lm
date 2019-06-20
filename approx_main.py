@@ -10,7 +10,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 
 import data
-from data import HiddenStateDataset, collate_fn
+from data import HiddenStateDataset
 import model
 from approx_model import MLP_Approximator
 
@@ -22,7 +22,7 @@ parser.add_argument('--data', type=str, default='data/penn/',
                     help='location of the data corpus')
 parser.add_argument('--output_hidden_path', type=str, default='output_hidden',
                     help='path to saved output and hidden states')
-parser.add_argument('--approximated_model', type=str, default='WT2.pt',
+parser.add_argument('--approx_model', type=str, default='WT2.pt',
                     help='path of model to approxiate')
 parser.add_argument('--ckpt', type=str,  default='',
                     help='path of model to save and resume')
@@ -34,16 +34,14 @@ parser.add_argument('--context_size', type=int, required=True,
                     help='size of used context')
 parser.add_argument('--hidden_size', type=int, required=True,
                     help='size of hidden state')
-parser.add_argument('--tied', action='store_false',
-                    help='tie the word embedding and softmax weights')
 # Training/evaluation/test
 ## Meta
 parser.add_argument('--seed', type=int, default=0,
                     help='random seed. default to 0.')
 parser.add_argument('--cuda', action='store_false',
                     help='use CUDA')
-parser.add_argument('--num_workers', type=int, default=4,
-                    help='number of data loader workers. default to 4.')
+parser.add_argument('--num_workers', type=int, default=12,
+                    help='number of data loader workers. default to 12.')
 ## Procedure
 parser.add_argument('--log-interval', type=int, default=200, metavar='N',
                     help='report interval')
@@ -109,6 +107,8 @@ datasets = {
         os.path.join(args.output_hidden_path, '{}.h5py'.format(stage)),
         context_size,
         corpus.dictionary.eos_id,
+        args.predict_all_layers,
+        args.predict_c,
     )
     for stage in ['train', 'valid', 'test']
 }
@@ -118,15 +118,15 @@ datasets = {
 ###############################################################################
 
 from splitcross import SplitCrossEntropyLoss
-approximated_criterion = None
+approx_criterion = None
 
 vocab_size = len(corpus.dictionary)
 ###
 print('Loading approximated model ...')
-with open(args.approximated_model, 'rb') as f:
-    approximated_model, approximated_criterion, _ = torch.load(f)
+with open(args.approx_model, 'rb') as f:
+    approx_model, approx_criterion, _ = torch.load(f)
 ###
-if not approximated_criterion:
+if not approx_criterion:
     splits = []
     if vocab_size > 500000:
         # One Billion
@@ -137,40 +137,15 @@ if not approximated_criterion:
         # WikiText-103
         splits = [2800, 20000, 76000]
     print('Using', splits)
-    approximated_criterion = SplitCrossEntropyLoss(args.emsize, splits=splits, verbose=False)
-###
-if args.cuda:
-    approximated_model.cuda()
-    approximated_criterion.cuda()
-###
+    approx_criterion = SplitCrossEntropyLoss(args.emsize, splits=splits, verbose=False)
 
 
-def get_target(states):
-    output, hidden = states
-    s = hidden if args.predict_all_layers else hidden[-1:]
-    if args.predict_c:
-        s = [torch.cat([c, h], -1) for c, h in s]
-    else:
-        s = [h for c, h in s]
-    return torch.cat(s, -1).squeeze(1).squeeze(1)
-
-
-def get_target_size():
-    dataset = datasets['train']
-    s = dataset.hidden if args.predict_all_layers else dataset.hidden[-1:]
-    if args.predict_c:
-        s = [c.shape[-1] + h.shape[-1] for c, h in s]
-    else:
-        s = [h.shape[-1] for c, h in s]
-    return sum(s)
-
-
-encoder = approximated_model.encoder
-decoder = approximated_model.decoder
+encoder = approx_model.encoder
+decoder = approx_model.decoder
 
 embedding_size = encoder.weight.size(1)
 hidden_size = args.hidden_size
-target_size = get_target_size()
+target_size = datasets['train'].target_size
 print('embedding_size={} hidden_size={} target_size={}'.format(
     embedding_size, hidden_size, target_size))
 
@@ -179,6 +154,9 @@ model = MLP_Approximator(context_size, embedding_size, hidden_size, target_size,
     args.weight_dropout)
 criterion = nn.MSELoss()
 if args.cuda:
+    approx_criterion.cuda()
+    encoder.cuda()
+    decoder.cuda()
     model.cuda()
     criterion.cuda()
 params = list(model.parameters()) + list(criterion.parameters())
@@ -218,26 +196,34 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
     data_loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        collate_fn=collate_fn,
         shuffle=False,
         drop_last=False,
         num_workers=args.num_workers,
     )
-    total_loss = 0
-    for snippet, states in tqdm(data_loader, desc='evaluate', dynamic_ncols=True):
-        if args.cuda:
-            snippet, states = map_structure(
-                lambda t: t.to('cuda', non_blocking=True),
-                (snippet, states))
-        input = encoder(snippet)
-        prediction = model(input)
-        target = get_target(states)
-        loss = criterion(prediction, target)
-        total_loss += len(snippet) * loss.item()
+    total_loss = 0.
+    total_approx_loss = 0.
+    with torch.no_grad():
+        for x, y, target in tqdm(data_loader, desc=prefix, dynamic_ncols=True):
+            if args.cuda:
+                x, y, target = map_structure(
+                    lambda t: t.to('cuda', non_blocking=True),
+                    (x, y, target))
+            input = encoder(x)
+            prediction = model(input)
+            loss = criterion(prediction, target)
+            total_loss += len(x) * loss.item()
+
+            output = dataset.get_output(prediction)
+            approx_loss = approx_criterion(
+                decoder.weight, decoder.bias,
+                output, y)
+            total_approx_loss += len(y) * approx_loss
+
     loss = total_loss / len(dataset)
-    print('{} loss={:.6f}'.format(
-        prefix, loss))
-    return loss
+    approx_loss = total_approx_loss / len(dataset)
+    print('{} loss={:.6f} approx loss={:6.2f} ppl={:6.2f}'.format(
+        prefix, loss, approx_loss, math.exp(approx_loss)))
+    return loss, approx_loss
 
 
 def train(dataset=datasets['train'], batch_size=args.train_batch_size):
@@ -246,36 +232,39 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
     data_loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        collate_fn=collate_fn,
         shuffle=True,
         drop_last=True,
         num_workers=args.num_workers,
     )
     total_loss = 0.
+    interval_loss = 0.
     t = tqdm(data_loader, desc='epoch {:3d}'.format(epoch), dynamic_ncols=True)
-    for i_batch, (snippet, states) in enumerate(t):
+    for i_batch, (x, y, target) in enumerate(t):
         if args.cuda:
-            snippet, states = map_structure(
+            x, y, target = map_structure(
                 lambda t: t.to('cuda', non_blocking=True),
-                (snippet, states))
+                (x, y, target))
         optimizer.zero_grad()
-        input = encoder(snippet)
+        input = encoder(x)
         prediction = model(input)
         target = get_target(states)
         loss = criterion(prediction, target)
+        total_loss += len(y) * loss.item()
+        interval_loss += loss.item()
         loss.backward()
         if args.clip:
             torch.nn.utils.clip_grad_norm_(params, args.clip)
         optimizer.step()
 
-        total_loss += loss.item()
-
         if (i_batch + 1) % args.log_interval == 0:
-            mean_loss = total_loss / args.log_interval
+            mean_loss = interval_loss / args.log_interval
             t.set_postfix_str('lr={:05.5f} loss={:.6f}'.format(
                 optimizer.param_groups[0]['lr'],
                 mean_loss))
-            total_loss = 0.
+            interval_loss = 0.
+    loss = total_loss / len(dataset)
+    print('train loss={:.6f}'.format(
+        loss))
 
 # Loop over epochs.
 valid_loss = evaluate()

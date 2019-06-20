@@ -187,7 +187,7 @@ def all_output_hidden(dataset):
             output, hidden = model(data, hidden)
             output = output.detach()
             hidden = repackage_hidden(hidden)
-            yield output.squeeze(0), hidden
+            yield output.squeeze(0), hidden, targets
 
 
 if args.get_output_hidden:
@@ -213,10 +213,15 @@ if args.get_output_hidden:
                 m_h = grp.create_dataset('h', (n, 1, 1, size), dtype='f')
                 m_c = grp.create_dataset('c', (n, 1, 1, size), dtype='f')
                 m_hidden.append((m_h, m_c))
-            for i, (output, hidden) in enumerate(all_output_hidden(dataset)):
+            total_loss = 0.
+            for i, (output, hidden, targets) in enumerate(all_output_hidden(dataset)):
                 def write(t, m):
                     m[i] = t
                 map_structure(write, (output, hidden), (m_output, m_hidden))
+                loss = criterion(model.decoder.weight, model.decoder.bias, output.unsqueeze(0), targets)
+                total_loss += loss.item()
+            mean_loss = total_loss / len(dataset)
+            print('mean_loss={}'.format(mean_loss))
     sys.exit(0)
 
 
@@ -227,12 +232,15 @@ def evaluate(data_source, batch_size):
     total_loss = 0
     ntokens = len(corpus.dictionary)
     hidden = model.init_hidden(batch_size)
-    for i in range(0, data_source.size(0) - 1, args.bptt):
+    for i in tqdm(range(0, data_source.size(0) - 1, args.bptt)):
         data, targets = get_batch(data_source, i, args, evaluation=True)
         output, hidden = model(data, hidden)
-        total_loss += len(data) * criterion(model.decoder.weight, model.decoder.bias, output, targets).data
+        loss = criterion(model.decoder.weight, model.decoder.bias, output, targets)
+        total_loss += len(data) * loss.item()
         hidden = repackage_hidden(hidden)
-    return total_loss.item() / len(data_source)
+    mean_loss = total_loss / len(data_source)
+    print('mean_loss={}'.format(mean_loss))
+    return mean_loss
 
 
 def train():
