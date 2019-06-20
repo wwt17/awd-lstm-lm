@@ -247,7 +247,6 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
         optimizer.zero_grad()
         input = encoder(x)
         prediction = model(input)
-        target = get_target(states)
         loss = criterion(prediction, target)
         total_loss += len(y) * loss.item()
         interval_loss += loss.item()
