@@ -12,9 +12,16 @@ from torch.utils.data import DataLoader
 import data
 from data import HiddenStateDataset
 import model
-from approx_model import MLP_Approximator
+import approx_models
 
 from utils import map_structure
+
+def arg_to_list(t):
+    return lambda arg: list(map(t, arg.split(',')))
+
+def int_or_list(arg):
+    l = arg_to_list(int)(arg)
+    return l[0] if len(l) == 1 else l
 
 parser = argparse.ArgumentParser(description='PyTorch Approximator of RNN/LSTM Language Model')
 # Path
@@ -30,10 +37,28 @@ parser.add_argument('--ckpt', type=str,  default='',
 parser.add_argument('--predict_all_layers', action='store_true')
 parser.add_argument('--predict_c', action='store_true')
 # Model
+parser.add_argument('--model_type', type=str, choices=['mlp', 'cnn'], default='cnn',
+                    required=True,
+                    help='Type of approximator model (mlp, cnn)')
+## Shared
 parser.add_argument('--context_size', type=int, required=True,
                     help='size of used context')
-parser.add_argument('--hidden_size', type=int, required=True,
+## MLP
+parser.add_argument('--hidden_size', type=int,
                     help='size of hidden state')
+## CNN
+parser.add_argument('--n_layers', type=int,
+                    help='number of CNN layers')
+parser.add_argument('--channels', type=int_or_list,
+                    help='number of CNN channels. can be a comma-separated list')
+parser.add_argument('--kernel_size', type=int_or_list,
+                    help='size of CNN kernels. can be a comma-separated list')
+parser.add_argument('--variational', action='store_true',
+                    help='whether to share CNN kernel paramters of different layers')
+parser.add_argument('--padding', action='store_false',
+                    help='whether not to use padding before CNNs')
+parser.add_argument('--output_layer_type', type=str, choices=['fc'], default='fc',
+                    help='type of CNN output layer')
 # Training/evaluation/test
 ## Meta
 parser.add_argument('--seed', type=int, default=0,
@@ -48,16 +73,16 @@ parser.add_argument('--log-interval', type=int, default=200, metavar='N',
 parser.add_argument('--epochs', type=int, default=8000,
                     help='upper epoch limit')
 ## Batch size
-parser.add_argument('--train_batch_size', type=int, default=80, metavar='N',
+parser.add_argument('--train_batch_size', type=int, default=16, metavar='N',
                     help='train batch size')
 parser.add_argument('--valid_batch_size', type=int, default=80,
                     help='eval batch size')
 parser.add_argument('--test_batch_size', type=int, default=80,
                     help='test batch size')
 ## Optimize
-parser.add_argument('--optimizer', type=str,  default='sgd', choices=['sgd', 'adam'],
+parser.add_argument('--optimizer', type=str,  default='adam', choices=['sgd', 'adam'],
                     help='optimizer to use (sgd, adam)')
-parser.add_argument('--lr', type=float, default=30,
+parser.add_argument('--lr', type=float, default=1e-4,
                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=0.,
                     help='gradient clipping')
@@ -74,6 +99,12 @@ parser.add_argument('--output_dropout', type=float, default=0.,
 parser.add_argument('--weight_dropout', type=float, default=0.5,
                     help='amount of weight dropout to apply to the hidden matrices')
 args = parser.parse_args()
+required_args = {
+    'mlp': ['hidden_size'],
+    'cnn': ['n_layers', 'channels', 'kernel_size', 'variational', 'output_layer_type'],
+}[args.model_type]
+for a in required_args:
+    assert getattr(args, a) is not None, 'must specify {}'.format(a)
 
 # Set the random seed manually for reproducibility.
 np.random.seed(args.seed)
@@ -149,9 +180,18 @@ target_size = datasets['train'].target_size
 print('embedding_size={} hidden_size={} target_size={}'.format(
     embedding_size, hidden_size, target_size))
 
-model = MLP_Approximator(context_size, embedding_size, hidden_size, target_size,
-    args.input_dropout, args.hidden_dropout, args.output_dropout,
-    args.weight_dropout)
+if args.model_type == 'mlp':
+    model = approx_models.MLP_Approximator(
+        context_size, embedding_size, hidden_size, target_size,
+        args.input_dropout, args.hidden_dropout, args.output_dropout,
+        args.weight_dropout)
+elif args.model_type == 'cnn':
+    model = approx_models.CNN_Approximator(
+        context_size, embedding_size, args.n_layers, args.channels,
+        args.kernel_size, target_size, variational=args.variational,
+        padding=args.padding, output_layer_type=args.output_layer_type,
+        input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
+        output_dropout=args.output_dropout)
 criterion = nn.MSELoss()
 if args.cuda:
     approx_criterion.cuda()
@@ -160,6 +200,9 @@ if args.cuda:
     model.cuda()
     criterion.cuda()
 params = list(model.parameters()) + list(criterion.parameters())
+print('parameters:')
+for name, param in list(model.named_parameters()) + list(criterion.named_parameters()):
+    print('{}:\t{}'.format(name, param.size()))
 total_params = sum(map(torch.Tensor.nelement, params))
 print('Model total parameters:', total_params)
 
