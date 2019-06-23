@@ -94,7 +94,7 @@ parser.add_argument('--wdecay', type=float, default=0.,
                     help='weight decay applied to all weights')
 parser.add_argument('--input_dropout', type=float, default=0.,
                     help='dropout applied to embedded input (0 = no dropout)')
-parser.add_argument('--hidden_dropout', type=float, default=0.3,
+parser.add_argument('--hidden_dropout', type=float, default=0.,
                     help='dropout for hidden layers (0 = no dropout)')
 parser.add_argument('--output_dropout', type=float, default=0.,
                     help='dropout applied to output (0 = no dropout)')
