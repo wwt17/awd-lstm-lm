@@ -39,7 +39,8 @@ class MLP_Approximator(nn.Module):
 class CNN_Approximator(nn.Module):
     def __init__(
             self, sequence_length, input_size, n_layers, channels, kernel_size,
-            output_size, variational=False, padding=True, output_layer_type='fc',
+            output_size, variational=False, padding=True, residual=False,
+            output_layer_type='fc',
             input_dropout=0., hidden_dropout=0., output_dropout=0.):
         super(CNN_Approximator, self).__init__()
         self.sequence_length = sequence_length
@@ -60,6 +61,7 @@ class CNN_Approximator(nn.Module):
         else:
             sequence_length -= self.kernel_size[0] - 1
             assert sequence_length > 0
+        self.residual = residual
         self.convs = [nn.Conv1d(input_size, self.channels[0], self.kernel_size[0])]
         self.hidden_dropouts = [nn.Dropout(hidden_dropout)] if hidden_dropout else None
         for l in range(1, n_layers):
@@ -68,21 +70,21 @@ class CNN_Approximator(nn.Module):
             else:
                 sequence_length -= self.kernel_size[l] - 1
                 assert sequence_length > 0
-            if variational and i > 1:
+            if variational and l > 1:
                 conv = self.convs[-1]
             else:
                 conv = nn.Conv1d(self.channels[l-1], self.channels[l], self.kernel_size[l])
             self.convs.append(conv)
             if hidden_dropout:
                 self.hidden_dropouts.append(nn.Dropout(hidden_dropout))
-        seq = []
-        for l in range(self.n_layers):
-            if self.padding:
-                seq.append(self.pads[l])
-            seq.append(self.convs[l])
-            if self.hidden_dropouts is not None:
-                seq.append(self.hidden_dropouts[l])
-        self.model = nn.Sequential(*seq)
+        if self.pads is not None:
+            for l, pad in enumerate(self.pads):
+                self.add_module('pad_{}'.format(l), pad)
+        for l, conv in enumerate(self.convs):
+            self.add_module('conv_{}'.format(l), conv)
+        if self.hidden_dropouts is not None:
+            for l, hidden_dropout in enumerate(self.hidden_dropouts):
+                self.add_module('hidden_dropout_{}'.format(l), hidden_dropout)
         self.output_layer_type = output_layer_type
         if output_layer_type == 'fc':
             self.output_layer = nn.Linear(sequence_length * self.channels[-1], output_size)
@@ -94,7 +96,17 @@ class CNN_Approximator(nn.Module):
         h = input.transpose(1, 2) # (batch_size, embedding_size, sequence_length)
         if self.input_dropout is not None:
             h = self.input_dropout(h)
-        h = self.model(h)
+        for l in range(self.n_layers):
+            h_ = h
+            if self.padding:
+                h_ = self.pads[l](h_)
+            h_ = self.convs[l](h_)
+            if self.hidden_dropouts is not None:
+                h_ = self.hidden_dropouts[l](h_)
+            if self.residual and l > 0:
+                h = h + h_
+            else:
+                h = h_
         if self.output_layer_type == 'fc':
             output = self.output_layer(h.reshape((h.size(0), -1)))
         if self.output_dropout is not None:

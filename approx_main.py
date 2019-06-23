@@ -57,6 +57,8 @@ parser.add_argument('--variational', action='store_true',
                     help='whether to share CNN kernel paramters of different layers')
 parser.add_argument('--padding', action='store_false',
                     help='whether not to use padding before CNNs')
+parser.add_argument('--residual', action='store_true',
+                    help='whether to add residual links in CNNs')
 parser.add_argument('--output_layer_type', type=str, choices=['fc'], default='fc',
                     help='type of CNN output layer')
 # Training/evaluation/test
@@ -189,7 +191,8 @@ elif args.model_type == 'cnn':
     model = approx_models.CNN_Approximator(
         context_size, embedding_size, args.n_layers, args.channels,
         args.kernel_size, target_size, variational=args.variational,
-        padding=args.padding, output_layer_type=args.output_layer_type,
+        padding=args.padding, residual=args.residual,
+        output_layer_type=args.output_layer_type,
         input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
         output_dropout=args.output_dropout)
 criterion = nn.MSELoss()
