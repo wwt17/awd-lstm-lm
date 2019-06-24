@@ -7,6 +7,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 
 import data
@@ -86,7 +87,7 @@ parser.add_argument('--optimizer', type=str,  default='adam', choices=['sgd', 'a
                     help='optimizer to use (sgd, adam)')
 parser.add_argument('--lr', type=float, default=1e-4,
                     help='initial learning rate')
-parser.add_argument('--clip', type=float, default=0.,
+parser.add_argument('--clip', type=float, default=100.,
                     help='gradient clipping')
 parser.add_argument('--when', nargs="+", type=int, default=[-1],
                     help='When (which epochs) to divide the learning rate by 10 - accepts multiple')
@@ -214,13 +215,25 @@ if args.optimizer == 'sgd':
 elif args.optimizer == 'adam':
     optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
 
+global_step = 0
+
 def model_load(path):
-    state_dicts = torch.load(model_path)
-    for module, state_dict in zip((model, criterion, optimizer), state_dicts):
+    states = torch.load(model_path)
+    for module, state_dict in zip((model, criterion, optimizer), states):
         module.load_state_dict(state_dict)
 
+    global global_step
+    if len(state_dicts) > 3:
+        global_step = states[3]
+    else:
+        global_step = list(states[2]['state'].values())[0]['step']
+
 def model_save(path):
-    torch.save(tuple(module.state_dict() for module in (model, criterion, optimizer)), path)
+    global global_step
+    torch.save(
+        tuple(module.state_dict() for module in (model, criterion, optimizer))
+        + (global_step,),
+        path)
 
 os.makedirs(args.ckpt, exist_ok=True)
 model_path = os.path.join(args.ckpt, 'best.pt')
@@ -235,8 +248,11 @@ except FileNotFoundError:
 # Training code
 ###############################################################################
 
+writer = SummaryWriter(os.path.join(args.ckpt, 'log'))
 
-def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix='validation'):
+
+def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix='valid'):
+    global global_step
     # Turn on evaluation mode which disables dropout.
     model.eval()
     data_loader = DataLoader(
@@ -267,12 +283,18 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
 
     loss = total_loss / len(dataset)
     approx_loss = total_approx_loss / len(dataset)
+    ppl = math.exp(approx_loss)
     print('{} loss={:.6f} approx loss={:6.2f} ppl={:6.2f}'.format(
-        prefix, loss, approx_loss, math.exp(approx_loss)))
+        prefix, loss, approx_loss, ppl))
+    writer.add_scalar('{}/loss'.format(prefix), loss, global_step)
+    writer.add_scalar('{}/approx_loss'.format(prefix), approx_loss, global_step)
+    writer.add_scalar('{}/ppl'.format(prefix), ppl, global_step)
     return loss, approx_loss
 
 
 def train(dataset=datasets['train'], batch_size=args.train_batch_size):
+    prefix = 'train'
+    global global_step
     # Turn on training mode which enables dropout.
     model.train()
     data_loader = DataLoader(
@@ -286,6 +308,7 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
     interval_loss = 0.
     t = tqdm(data_loader, desc='epoch {:3d}'.format(epoch), dynamic_ncols=True)
     for i_batch, (x, y, target) in enumerate(t):
+        global_step += 1
         if args.cuda:
             x, y, target = map_structure(
                 lambda t: t.to('cuda', non_blocking=True),
@@ -294,12 +317,14 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
         input = encoder(x)
         prediction = model(input)
         loss = criterion(prediction, target)
+        writer.add_scalar('{}/loss'.format(prefix), loss.item(), global_step)
         total_loss += len(y) * loss.item()
         interval_loss += loss.item()
         loss.backward()
-        if args.clip:
-            torch.nn.utils.clip_grad_norm_(params, args.clip)
+        grad_norm = torch.nn.utils.clip_grad_norm_(params, args.clip)
+        writer.add_scalar('{}/grad_norm'.format(prefix), grad_norm, global_step)
         optimizer.step()
+        writer.add_scalar('{}/lr'.format(prefix), optimizer.param_groups[0]['lr'], global_step)
 
         if (i_batch + 1) % args.log_interval == 0:
             mean_loss = interval_loss / args.log_interval
@@ -344,3 +369,5 @@ model_load(os.path.join(args.ckpt, 'best.pt'))
 
 # Run on test data.
 test_loss = evaluate(datasets['test'], args.test_batch_size, prefix='test')
+
+writer.close()
