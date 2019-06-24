@@ -223,7 +223,7 @@ def model_load(path):
         module.load_state_dict(state_dict)
 
     global global_step
-    if len(state_dicts) > 3:
+    if len(states) > 3:
         global_step = states[3]
     else:
         global_step = list(states[2]['state'].values())[0]['step']
