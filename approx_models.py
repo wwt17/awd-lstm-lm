@@ -115,3 +115,29 @@ class CNN_Approximator(nn.Module):
         if self.output_layer_type == 'fc':
             output = self.output_layer(h.reshape((h.size(0), -1)))
         return output
+
+class LSTM_Approximator(nn.Module):
+    def __init__(
+            self, sequence_length, input_size, hidden_size, n_layers,
+            output_size=None, input_dropout=0., hidden_dropout=0., output_dropout=0.):
+        super(LSTM_Approximator, self).__init__()
+        self.sequence_length = sequence_length
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.n_layers = n_layers
+        self.output_size = output_size if output_size is not None else hidden_size
+        self.lstm = nn.LSTM(input_size, hidden_size, n_layers, dropout=hidden_dropout, batch_first=True)
+        self.input_dropout = nn.Dropout(input_dropout) if input_dropout else None
+        self.output_dropout = nn.Dropout(output_dropout) if output_dropout else None
+        self.output_layer = nn.Linear(hidden_size, output_size) if output_size else None
+
+    def forward(self, input): # input: (batch_size, sequence_length, embedding_size)
+        if self.input_dropout is not None:
+            input = self.input_dropout(input)
+        output, (h, c) = self.lstm(input)
+        output = output[:, -1]
+        if self.output_dropout is not None:
+            output = self.output_dropout(output)
+        if self.output_layer is not None:
+            output = self.output_layer(output)
+        return output

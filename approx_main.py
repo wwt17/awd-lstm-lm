@@ -38,18 +38,19 @@ parser.add_argument('--ckpt', type=str,  default='',
 parser.add_argument('--predict_all_layers', action='store_true')
 parser.add_argument('--predict_c', action='store_true')
 # Model
-parser.add_argument('--model_type', type=str, choices=['mlp', 'cnn'], default='cnn',
+parser.add_argument('--model_type', type=str, choices=['mlp', 'cnn', 'lstm'], default='cnn',
                     required=True,
-                    help='Type of approximator model (mlp, cnn)')
+                    help='Type of approximator model (mlp, cnn, lstm)')
 ## Shared
 parser.add_argument('--context_size', type=int, required=True,
                     help='size of used context')
-## MLP
+## Shared by MLP and LSTM
 parser.add_argument('--hidden_size', type=int,
                     help='size of hidden state')
-## CNN
+## Shared by CNN and LSTM
 parser.add_argument('--n_layers', type=int,
-                    help='number of CNN layers')
+                    help='number of CNN/LSTM layers')
+## CNN
 parser.add_argument('--channels', type=int_or_list,
                     help='number of CNN channels. can be a comma-separated list')
 parser.add_argument('--kernel_size', type=int_or_list,
@@ -62,6 +63,8 @@ parser.add_argument('--residual', action='store_true',
                     help='whether to add residual links in CNNs')
 parser.add_argument('--output_layer_type', type=str, choices=['fc'], default='fc',
                     help='type of CNN output layer')
+## LSTM
+parser.add_argument('--no_transform_output', action='store_true')
 # Training/evaluation/test
 ## Meta
 parser.add_argument('--seed', type=int, default=0,
@@ -105,6 +108,7 @@ args = parser.parse_args()
 required_args = {
     'mlp': ['hidden_size'],
     'cnn': ['n_layers', 'channels', 'kernel_size', 'variational', 'output_layer_type'],
+    'lstm': ['hidden_size', 'n_layers']
 }[args.model_type]
 for a in required_args:
     assert getattr(args, a) is not None, 'must specify {}'.format(a)
@@ -194,6 +198,12 @@ elif args.model_type == 'cnn':
         args.kernel_size, target_size, variational=args.variational,
         padding=args.padding, residual=args.residual,
         output_layer_type=args.output_layer_type,
+        input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
+        output_dropout=args.output_dropout)
+elif args.model_type == 'lstm':
+    model = approx_models.LSTM_Approximator(
+        context_size, embedding_size, hidden_size, args.n_layers,
+        None if args.no_transform_output else target_size,
         input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
         output_dropout=args.output_dropout)
 criterion = nn.MSELoss()
