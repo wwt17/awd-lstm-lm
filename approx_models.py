@@ -2,9 +2,23 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import texar as tx
+from texar.modules import TransformerEncoder, SinusoidsPositionEmbedder
+
 from weight_drop import WeightDrop
 
 import copy
+
+
+def get_output_layer(output_layer_type, output_size, sequence_length, hidden_size):
+    if output_layer_type == 'fc':
+        return nn.Linear(sequence_length * hidden_size, output_size)
+    else:
+        raise Exception('output_layer_type={} is not supported'.format(output_layer_type))
+
+def perform_output_layer(h, output_layer_type, output_layer):
+    if output_layer_type == 'fc':
+        return output_layer(h.reshape((h.size(0), -1)))
 
 
 class MLP_Approximator(nn.Module):
@@ -89,10 +103,8 @@ class CNN_Approximator(nn.Module):
                 self.add_module('hidden_dropout_{}'.format(l), hidden_dropout)
         self.output_dropout = nn.Dropout(output_dropout) if output_dropout else None
         self.output_layer_type = output_layer_type
-        if output_layer_type == 'fc':
-            self.output_layer = nn.Linear(sequence_length * self.channels[-1], output_size)
-        else:
-            raise Exception('output_layer_type={} is not supported'.format(output_layer_type))
+        self.output_layer = get_output_layer(
+            output_layer_type, sequence_length, self.channels[-1], output_size)
 
     def forward(self, input): # input: (batch_size, sequence_length, embedding_size)
         h = input.transpose(1, 2) # (batch_size, embedding_size, sequence_length)
@@ -112,9 +124,9 @@ class CNN_Approximator(nn.Module):
                 h = h_
         if self.output_dropout is not None:
             h = self.output_dropout(h)
-        if self.output_layer_type == 'fc':
-            output = self.output_layer(h.reshape((h.size(0), -1)))
+        output = perform_output_layer(h, self.output_layer_type, self.output_layer)
         return output
+
 
 class LSTM_Approximator(nn.Module):
     def __init__(
@@ -140,4 +152,52 @@ class LSTM_Approximator(nn.Module):
             output = self.output_dropout(output)
         if self.output_layer is not None:
             output = self.output_layer(output)
+        return output
+
+
+class Transformer_Approximator(nn.Module):
+    def __init__(
+            self, sequence_length, input_size, hidden_size, n_blocks, n_heads,
+            output_size, output_layer_type='fc',
+            embedding_dropout=0.1, residual_dropout=0.1, multihead_dropout=0.1):
+        super(Transformer_Approximator, self).__init__()
+        self.sequence_length = sequence_length
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.n_blocks = n_blocks
+        self.n_heads = n_heads
+        self.output_size = output_size
+        self.pos_embedder = SinusoidsPositionEmbedder(
+            sequence_length,
+            hparams={"dim": input_size},
+        )
+        self.encoder = TransformerEncoder(hparams={
+            "dim": hidden_size,
+            "num_blocks": n_blocks,
+            "embedding_dropout": embedding_dropout,
+            "residual_dropout": residual_dropout,
+            "poswise_feedforward": tx.modules.encoders.transformer_encoder
+                .default_transformer_poswise_net_hparams(
+                    input_dim=hidden_size,
+                    output_dim=hidden_size,
+            ),
+            "multihead_attention": {
+                "num_units": hidden_size,
+                "num_heads": n_heads,
+                "dropout_rate": multihead_dropout,
+                "output_dim": hidden_size,
+                "use_bias": False,
+            },
+        })
+        self.output_layer_type = output_layer_type
+        self.output_layer = get_output_layer(
+            output_layer_type, output_size, sequence_length, hidden_size)
+
+    def forward(self, input): # input: (batch_size, sequence_length, embedding_size)
+        input = input * self.hidden_size ** .5
+        seq_len = torch.full(input.size()[:1], self.sequence_length, dtype=torch.int32, device=input.device)
+        pos_embeds = self.pos_embedder(sequence_length=seq_len)
+        input = input + pos_embeds
+        h = self.encoder(inputs=input, sequence_length=seq_len)
+        output = perform_output_layer(h, self.output_layer_type, self.output_layer)
         return output
