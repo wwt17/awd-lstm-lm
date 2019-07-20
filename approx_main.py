@@ -132,16 +132,7 @@ if torch.cuda.is_available():
 # Load data
 ###############################################################################
 
-import os
-import hashlib
-fn = 'corpus.{}.data'.format(hashlib.md5(args.data.encode()).hexdigest())
-if os.path.exists(fn):
-    print('Loading cached dataset...')
-    corpus = torch.load(fn)
-else:
-    print('Producing dataset...')
-    corpus = data.Corpus(args.data)
-    torch.save(corpus, fn)
+corpus = data.prepare_corpus(args.data)
 
 context_size = args.context_size
 

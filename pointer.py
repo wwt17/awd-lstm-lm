@@ -67,7 +67,8 @@ def evaluate(data_source, batch_size=10, window=args.window):
     pointer_history = None
     for i in range(0, data_source.size(0) - 1, args.bptt):
         if i > 0: print(i, len(data_source), math.exp(total_loss / i))
-        data, targets = get_batch(data_source, i, evaluation=True, args=args)
+        data, targets = get_batch(data_source, i, args.bptt)
+        targets = targets.view(-1)
         output, hidden, rnn_outs, _ = model(data, hidden, return_h=True)
         rnn_out = rnn_outs[-1].squeeze()
         output_flat = output.view(-1, ntokens)

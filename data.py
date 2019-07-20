@@ -110,3 +110,16 @@ class HiddenStateDataset(Dataset):
             return hidden_state[:, -h-c : -c]
         else:
             return hidden_state[:, -h:]
+
+
+def prepare_corpus(data_name):
+    import hashlib
+    fn = 'corpus.{}.data'.format(hashlib.md5(data_name.encode()).hexdigest())
+    if os.path.exists(fn):
+        print('Loading cached dataset...')
+        corpus = torch.load(fn)
+    else:
+        print('Producing dataset...')
+        corpus = data.Corpus(data_name)
+        torch.save(corpus, fn)
+    return corpus
