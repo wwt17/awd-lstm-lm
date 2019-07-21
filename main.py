@@ -147,6 +147,14 @@ if is_GPT2:
     config_model.pop('dim')
     config_model['vocab_size'] = ntokens
     model = GPT2Decoder(hparams=config_model)
+    def model_fn(data):
+        output_layer = model.decoder._output_layer
+        model.decoder._output_layer = tx.core.layers.Identity()
+        output = model(
+            decoding_strategy='train_greedy',
+            inputs=data.transpose(0, 1))
+        model.decoder._output_layer = output_layer
+        return output.raw_output.transpose(0, 1)
 else:
     model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
 ###
@@ -182,6 +190,9 @@ if args.cuda:
 else:
     device = torch.device('cpu')
 ###
+output_layer = model.decoder.output_layer if is_GPT2 else model.decoder
+def criterion_fn(output, targets):
+    return criterion(output_layer.weight, output_layer.bias, output.reshape(-1, output.size(-1)), targets.reshape(-1))
 params = list(model.parameters()) + list(criterion.parameters())
 total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in params if x.size())
 print('Args:', args)
@@ -203,13 +214,7 @@ def all_output_hidden(dataset):
         for i in tqdm(range(0, dataset.size(0) - 1, seq_len)):
             data, targets = get_batch(dataset, i, seq_len)
             if is_GPT2:
-                output_layer = model.decoder._output_layer
-                model.decoder._output_layer = tx.core.layers.Identity()
-                output = model(
-                    decoding_strategy='train_greedy',
-                    inputs=data.transpose(0, 1))
-                model.decoder._output_layer = output_layer
-                yield output.raw_output.transpose(0, 1), targets
+                yield model_fn(data), targets
             else:
                 output, hidden = model(data, hidden)
                 output = output.detach()
@@ -240,8 +245,8 @@ if args.get_output_hidden:
                 for l in range(nlayers):
                     grp = f.create_group('hidden/{}'.format(l))
                     size = nhid if l != nlayers -1 else last_size
-                    m_h = grp.create_dataset('h', (n, 1, 1, size), dtype='f')
-                    m_c = grp.create_dataset('c', (n, 1, 1, size), dtype='f')
+                    m_h = grp.create_dataset('h', (n, 1, size), dtype='f')
+                    m_c = grp.create_dataset('c', (n, 1, size), dtype='f')
                     m_hidden.append((m_h, m_c))
                 m = (m_output, m_hidden)
             total_loss = 0.
@@ -249,9 +254,10 @@ if args.get_output_hidden:
             for states, targets in all_output_hidden(dataset):
                 seq_len = len(targets)
                 def write(t, m):
-                    m[p : p + seq_len] = t
+                    m[p : p + seq_len] = t.unsqueeze(-2)
                 map_structure(write, states, m)
-                loss = criterion(model.decoder.output_layer.weight, model.decoder.output_layer.bias, states.transpose(0, 1).reshape(-1, states.size(-1)), targets.view(-1)) if is_GPT2 else criterion(model.decoder.weight, model.decoder.bias, output, targets.view(-1))
+                output = states if is_GPT2 else states[0]
+                loss = criterion_fn(output, targets)
                 total_loss += loss.item()
                 p += seq_len
             mean_loss = total_loss / len(dataset)
@@ -271,19 +277,11 @@ def evaluate(data_source, batch_size):
         for i in tqdm(range(0, data_source.size(0) - 1, seq_len)):
             data, targets = get_batch(data_source, i, seq_len)
             if is_GPT2:
-                output_layer = model.decoder._output_layer
-                model.decoder._output_layer = tx.core.layers.Identity()
-                output = model(
-                    decoding_strategy='train_greedy',
-                    inputs=data.transpose(0, 1))
-                model.decoder._output_layer = output_layer
-                output = output.raw_output.transpose(0, 1)
-                output = output.reshape(-1, output.size(-1))
-                loss = criterion(output_layer.weight, output_layer.bias, output, targets.view(-1))
+                output = model_fn(data)
             else:
                 output, hidden = model(data, hidden)
                 hidden = repackage_hidden(hidden)
-                loss = criterion(model.decoder.weight, model.decoder.bias, output, targets.view(-1))
+            loss = criterion_fn(output, targets)
             total_loss += len(data) * loss.item()
     mean_loss = total_loss / len(data_source)
     print('mean_loss={}'.format(mean_loss))
@@ -291,6 +289,7 @@ def evaluate(data_source, batch_size):
 
 
 def train():
+    print('Training...')
     # Turn on training mode which enables dropout.
     if args.model == 'QRNN': model.reset()
     total_loss = 0.
@@ -313,25 +312,18 @@ def train():
         optimizer.zero_grad()
 
         if is_GPT2:
-            output_layer = model.decoder._output_layer
-            model.decoder._output_layer = tx.core.layers.Identity()
-            output = model(
-                decoding_strategy='train_greedy',
-                inputs=data.transpose(0, 1))
-            model.decoder._output_layer = output_layer
-            output = output.raw_output.transpose(0, 1)
-            output = output.reshape(-1, output.size(-1))
-            raw_loss = criterion(output_layer.weight, output_layer.bias, output, targets.view(-1))
+            output = model_fn(data)
         else:
             output, hidden, rnn_hs, dropped_rnn_hs = model(data, hidden, return_h=True)
             hidden = repackage_hidden(hidden)
-            raw_loss = criterion(model.decoder.weight, model.decoder.bias, output, targets.view(-1))
+        raw_loss = criterion_fn(output, targets)
 
         loss = raw_loss
-        # Activiation Regularization
-        if args.alpha: loss = loss + sum(args.alpha * dropped_rnn_h.pow(2).mean() for dropped_rnn_h in dropped_rnn_hs[-1:])
-        # Temporal Activation Regularization (slowness)
-        if args.beta: loss = loss + sum(args.beta * (rnn_h[1:] - rnn_h[:-1]).pow(2).mean() for rnn_h in rnn_hs[-1:])
+        if not is_GPT2:
+            # Activiation Regularization
+            if args.alpha: loss = loss + sum(args.alpha * dropped_rnn_h.pow(2).mean() for dropped_rnn_h in dropped_rnn_hs[-1:])
+            # Temporal Activation Regularization (slowness)
+            if args.beta: loss = loss + sum(args.beta * (rnn_h[1:] - rnn_h[:-1]).pow(2).mean() for rnn_h in rnn_hs[-1:])
         loss.backward()
 
         # `clip_grad_norm` helps prevent the exploding gradient problem in RNNs / LSTMs.
