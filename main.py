@@ -15,7 +15,7 @@ import model
 import importlib
 import texar as tx
 
-from utils import batchify, get_batch, repackage_hidden, map_structure
+from utils import batchify, get_batch, repackage_hidden, map_structure, loss_repr
 from gpt2_decoder import GPT2Decoder
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
@@ -261,11 +261,11 @@ if args.get_output_hidden:
                 total_loss += loss.item()
                 p += seq_len
             mean_loss = total_loss / len(dataset)
-            print('mean_loss={}'.format(mean_loss))
+            print('| {}'.format(loss_repr(mean_loss)))
     sys.exit(0)
 
 
-def evaluate(data_source, batch_size):
+def evaluate(data_source, batch_size, prefix):
     # Turn on evaluation mode which disables dropout.
     model.eval()
     if args.model == 'QRNN': model.reset()
@@ -284,7 +284,7 @@ def evaluate(data_source, batch_size):
             loss = criterion_fn(output, targets)
             total_loss += len(data) * loss.item()
     mean_loss = total_loss / len(data_source)
-    print('mean_loss={}'.format(mean_loss))
+    print('{} {}'.format(prefix, loss_repr(mean_loss)))
     return mean_loss
 
 
@@ -335,10 +335,9 @@ def train():
         if batch % args.log_interval == 0 and batch > 0:
             cur_loss = total_loss / args.log_interval
             elapsed = time.time() - start_time
-            print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:05.5f} | ms/batch {:5.2f} | '
-                    'loss {:5.2f} | ppl {:8.2f} | bpc {:8.3f}'.format(
+            print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:05.5f} | ms/batch {:5.2f} | {}'.format(
                 epoch, batch, len(train_data) // args.bptt, optimizer.param_groups[0]['lr'],
-                elapsed * 1000 / args.log_interval, cur_loss, math.exp(cur_loss), cur_loss / math.log(2)))
+                elapsed * 1000 / args.log_interval, loss_repr(cur_loss)))
             total_loss = 0.
             start_time = time.time()
         ###
@@ -347,7 +346,7 @@ def train():
 
 # Loop over epochs.
 lr = args.lr
-stored_loss = evaluate(val_data, eval_batch_size)
+stored_loss = evaluate(val_data, eval_batch_size, 'valid')
 best_val_loss = []
 
 # At any point you can hit Ctrl + C to break out of training early.
@@ -367,11 +366,10 @@ try:
                 tmp[prm] = prm.data.clone()
                 prm.data = optimizer.state[prm]['ax'].clone()
 
-            val_loss2 = evaluate(val_data, eval_batch_size)
+            val_loss2 = evaluate(val_data, eval_batch_size, 'valid')
             print('-' * 89)
-            print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | '
-                'valid ppl {:8.2f} | valid bpc {:8.3f}'.format(
-                    epoch, (time.time() - epoch_start_time), val_loss2, math.exp(val_loss2), val_loss2 / math.log(2)))
+            print('| end of epoch {:3d} | time: {:5.2f}s'.format(
+                    epoch, (time.time() - epoch_start_time)))
             print('-' * 89)
 
             if val_loss2 < stored_loss:
@@ -383,11 +381,10 @@ try:
                 prm.data = tmp[prm].clone()
 
         else:
-            val_loss = evaluate(val_data, eval_batch_size)
+            val_loss = evaluate(val_data, eval_batch_size, 'valid')
             print('-' * 89)
-            print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | '
-                'valid ppl {:8.2f} | valid bpc {:8.3f}'.format(
-              epoch, (time.time() - epoch_start_time), val_loss, math.exp(val_loss), val_loss / math.log(2)))
+            print('| end of epoch {:3d} | time: {:5.2f}s'.format(
+              epoch, (time.time() - epoch_start_time)))
             print('-' * 89)
 
             if val_loss < stored_loss:
@@ -415,8 +412,7 @@ except KeyboardInterrupt:
 model_load(args.save)
 
 # Run on test data.
-test_loss = evaluate(test_data, test_batch_size)
+test_loss = evaluate(test_data, test_batch_size, 'test')
 print('=' * 89)
-print('| End of training | test loss {:5.2f} | test ppl {:8.2f} | test bpc {:8.3f}'.format(
-    test_loss, math.exp(test_loss), test_loss / math.log(2)))
+print('| End of training')
 print('=' * 89)
