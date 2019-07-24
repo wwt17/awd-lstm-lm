@@ -1,4 +1,5 @@
 import torch
+import math
 
 
 def map_structure(f, *s):
@@ -31,3 +32,8 @@ def get_batch(source, i, seq_len):
     data = source[i:i+seq_len]
     target = source[i+1:i+1+seq_len]
     return data, target
+
+
+def loss_repr(loss):
+    return 'loss {:5.2f} | ppl {:8.2f} | bpc {:8.3f}'.format(
+        loss, math.exp(loss), loss / math.log(2))
