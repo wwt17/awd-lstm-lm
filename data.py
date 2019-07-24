@@ -120,6 +120,6 @@ def prepare_corpus(data_name):
         corpus = torch.load(fn)
     else:
         print('Producing dataset...')
-        corpus = data.Corpus(data_name)
+        corpus = Corpus(data_name)
         torch.save(corpus, fn)
     return corpus
