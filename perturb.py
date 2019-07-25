@@ -130,8 +130,6 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
     print('Number of examples to ignore: {}'.format(examples_to_ignore))
     batches_to_ignore = examples_to_ignore // args.batch_size
 
-    cross_entropy = nn.CrossEntropyLoss(reduction='none')
-
     with torch.no_grad():
         if not is_GPT2:
             # when using your own LM, ensure the init hidden function exists!
