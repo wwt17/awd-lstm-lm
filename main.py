@@ -15,7 +15,7 @@ import model
 import importlib
 import texar as tx
 
-from utils import batchify, get_batch, repackage_hidden, map_structure, loss_repr
+from utils import batchify, get_batch, repackage_hidden, map_structure, loss_repr, get_model_fn, get_criterion_fn
 from gpt2_decoder import GPT2Decoder
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
@@ -147,14 +147,7 @@ if is_GPT2:
     config_model.pop('dim')
     config_model['vocab_size'] = ntokens
     model = GPT2Decoder(hparams=config_model)
-    def model_fn(data):
-        output_layer = model.decoder._output_layer
-        model.decoder._output_layer = tx.core.layers.Identity()
-        output = model(
-            decoding_strategy='train_greedy',
-            inputs=data.transpose(0, 1))
-        model.decoder._output_layer = output_layer
-        return output.raw_output.transpose(0, 1)
+    model_fn = get_model_fn(model)
 else:
     model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
 ###
@@ -190,9 +183,7 @@ if args.cuda:
 else:
     device = torch.device('cpu')
 ###
-output_layer = model.decoder.output_layer if is_GPT2 else model.decoder
-def criterion_fn(output, targets):
-    return criterion(output_layer.weight, output_layer.bias, output.reshape(-1, output.size(-1)), targets.reshape(-1))
+criterion_fn = get_criterion_fn(model, criterion, is_GPT2)
 params = list(model.parameters()) + list(criterion.parameters())
 total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in params if x.size())
 print('Args:', args)

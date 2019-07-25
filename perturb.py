@@ -14,6 +14,7 @@ import data
 import model
 
 from utils_context import batchify_context, get_context_batch, get_vocab_all_pos
+from utils import get_model_fn, get_criterion_fn
 from gpt2_decoder import GPT2Decoder
 # this is not a good practice, but making an exception in this case
 from perturbations import *
@@ -81,9 +82,10 @@ if args.cuda:
 else:
     model.cpu()
 
-output_layer = model.decoder.output_layer if is_GPT2 else model.decoder
-def criterion_fn(output, targets):
-    return criterion(output_layer.weight, output_layer.bias, output.reshape(-1, output.size(-1)), targets.reshape(-1))
+if is_GPT2:
+    model_fn = get_model_fn(model)
+
+criterion_fn = get_criterion_fn(model, criterion, is_GPT2)
 
 corpus = data.prepare_corpus(args.data)
 
@@ -131,8 +133,9 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
     cross_entropy = nn.CrossEntropyLoss(reduction='none')
 
     with torch.no_grad():
-        # when using your own LM, ensure the init hidden function exists!
-        init_hidden = model.init_hidden(args.batch_size)
+        if not is_GPT2:
+            # when using your own LM, ensure the init hidden function exists!
+            init_hidden = model.init_hidden(args.batch_size)
         t = tqdm(range(batches_to_ignore, nbatches))
         for i in t:
             data, targets = get_context_batch(data_source, i, args.batch_size, args.seq_len)
@@ -144,7 +147,10 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
                 targets[-1], ptargets[-1] if ptargets is not None else None,
                 args)
 
-            output, _ = model(data, init_hidden)
+            if is_GPT2:
+                output = model_fn(data)
+            else:
+                output, _ = model(data, init_hidden)
             loss = criterion_fn(output[-1:], targets[-1:])
             total_loss += targets.size(1) * loss.item()
             n += targets.size(1)

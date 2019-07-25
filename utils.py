@@ -1,5 +1,6 @@
 import torch
 import math
+import texar as tx
 
 
 def map_structure(f, *s):
@@ -37,3 +38,22 @@ def get_batch(source, i, seq_len):
 def loss_repr(loss):
     return 'loss {:5.2f} | ppl {:8.2f} | bpc {:8.3f}'.format(
         loss, math.exp(loss), loss / math.log(2))
+
+
+def get_model_fn(model):
+    def model_fn(data):
+        output_layer = model.decoder._output_layer
+        model.decoder._output_layer = tx.core.layers.Identity()
+        output = model(
+            decoding_strategy='train_greedy',
+            inputs=data.transpose(0, 1))
+        model.decoder._output_layer = output_layer
+        return output.raw_output.transpose(0, 1)
+    return model_fn
+
+
+def get_criterion_fn(model, criterion, is_GPT2):
+    output_layer = model.decoder.output_layer if is_GPT2 else model.decoder
+    def criterion_fn(output, targets):
+        return criterion(output_layer.weight, output_layer.bias, output.reshape(-1, output.size(-1)), targets.reshape(-1))
+    return criterion_fn
