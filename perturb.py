@@ -142,10 +142,7 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
             if n == 0:
                 print('First word: {}'.format(corpus.dictionary.idx2word[data.data[-1, 0]]))
             pdata, ptargets = get_context_batch(pdata_source, i, args.batch_size, args.seq_len) if pdata_source is not None else (None, None)
-            data = perturb_fn(
-                data.transpose(1, 0), pdata.transpose(1, 0) if pdata is not None else None,
-                targets[-1], ptargets[-1] if ptargets is not None else None,
-                args)
+            data = perturb_fn(data, pdata, targets, ptargets, args)
 
             if is_GPT2:
                 output = model_fn(data)
@@ -218,9 +215,10 @@ for boundary in loop_range:
     loss, all_losses = evaluate(
         data_, pos_data,
         lambda data, pdata, targets, ptargets, args: perturb_data(
-            data, pdata,
+            data.transpose(1, 0), pdata.transpose(1, 0) if pdata is not None else None,
             boundary, cfunc, args, pos_dict,
-            targets, ptargets, pos2vocab),
+            targets[-1], ptargets[-1] if ptargets is not None else None,
+            pos2vocab),
         args)
     print('{} loss: {}, ppl: {}'.format(res_label, loss, math.exp(loss)))
 
