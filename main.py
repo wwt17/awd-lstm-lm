@@ -147,7 +147,6 @@ if is_GPT2:
     config_model.pop('dim')
     config_model['vocab_size'] = ntokens
     model = GPT2Decoder(hparams=config_model)
-    model_fn = get_model_fn(model)
 else:
     model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
 ###
@@ -183,6 +182,8 @@ if args.cuda:
 else:
     device = torch.device('cpu')
 ###
+if is_GPT2:
+    model_fn = get_model_fn(model)
 criterion_fn = get_criterion_fn(model, criterion, is_GPT2)
 params = list(model.parameters()) + list(criterion.parameters())
 total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in params if x.size())
