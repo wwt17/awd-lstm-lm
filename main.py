@@ -186,9 +186,10 @@ if is_GPT2:
     model_fn = get_model_fn(model)
 criterion_fn = get_criterion_fn(model, criterion, is_GPT2)
 params = list(model.parameters()) + list(criterion.parameters())
-total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in params if x.size())
-print('Args:', args)
-print('Model total parameters:', total_params)
+total_params = sum(map(torch.Tensor.nelement, params))
+print('Args: {}'.format(args))
+print('Model total parameters: {}'.format(total_params))
+print('Output layer parameters: {}'.format(sum(map(torch.Tensor.nelement, (model.decoder.output_layer if is_GPT2 else model.decoder).parameters()))))
 
 ###############################################################################
 # Training code
