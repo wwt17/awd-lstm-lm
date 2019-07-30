@@ -101,12 +101,13 @@ if torch.cuda.is_available():
 
 def model_save(fn):
     with open(fn, 'wb') as f:
-        torch.save([model, criterion, optimizer], f)
+        torch.save([m.state_dict() for m in [model, criterion, optimizer]], f)
 
 def model_load(fn):
-    global model, criterion, optimizer
     with open(fn, 'rb') as f:
-        model, criterion, optimizer = torch.load(f)
+        state_dicts = torch.load(f)
+    for m, state_dict in zip([model, criterion, optimizer], state_dicts):
+        m.load_state_dict(state_dict)
 
 corpus = data.prepare_corpus(args.data)
 
@@ -137,7 +138,7 @@ is_GPT2 = (args.model == 'GPT2')
 from splitcross import SplitCrossEntropyLoss
 criterion = None
 
-ntokens = len(corpus.dictionary)
+ntokens = corpus.vocab.size
 print('ntokens: {}'.format(ntokens))
 if is_GPT2:
     config_model = importlib.import_module(args.config_model)
