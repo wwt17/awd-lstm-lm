@@ -13,7 +13,7 @@ import torch.nn as nn
 import data
 import model
 
-from utils_context import batchify_context, get_context_batch, get_vocab_all_pos
+from utils_context import batchify_context, get_context_batch, get_vocab_all_pos, get_perplexities_entropies
 from utils import get_model_fn, get_criterion_fn
 from gpt2_decoder import GPT2Decoder
 # this is not a good practice, but making an exception in this case
@@ -58,6 +58,8 @@ parser.add_argument('--pos', action='append', default=None,
 parser.add_argument('--use_range', nargs='+', type=lambda s: list(map(int, s)),
                     default=[1, 5, 10, 15, 20, 30, 50, 100, 200],
                     help='Use these values for the boundary loop, but first convert to ints. Sample usage is --use_range 5 20 100')
+parser.add_argument('--entropy', action='store_true',
+                    help='Get entropy')
 args = parser.parse_args()
 print(args)
 
@@ -102,7 +104,7 @@ print('On {} set!!!'.format(args.stage))
 data_ = batchify_context(getattr(corpus, args.stage), args.batch_size)
 if pos_corpus is not None:
     pos_data = batchify_context(getattr(pos_corpus, args.stage), args.batch_size)
-    pos_dict = pos_corpus.dictionary
+    pos_dict = pos_corpus.vocab
 else:
     pos_data = None
     pos_dict = None
@@ -117,9 +119,9 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
     # Turn on evaluation mode which disables dropout.
     model.eval()
 
-    total_loss = 0.
     n = 0
-    all_losses = []
+    total_loss, total_entopy = 0., 0.
+    all_losses, all_entropies = [], []
 
     # Number of batches excludes the last seq_len tokens as start of context, since the target index would lie out of bounds.
     # Skip examples at the beginning to ensure the first target is the same for each experiment.
@@ -138,7 +140,7 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
         for i in t:
             data, targets = get_context_batch(data_source, i, args.batch_size, args.seq_len)
             if n == 0:
-                print('First word: {}'.format(corpus.dictionary.idx2word[data.data[-1, 0]]))
+                print('First word: {}'.format(corpus.vocab.id_to_token_map_py[int(data[-1, 0])]))
             pdata, ptargets = get_context_batch(pdata_source, i, args.batch_size, args.seq_len) if pdata_source is not None else (None, None)
             data = perturb_fn(data, pdata, targets, ptargets, args)
 
@@ -146,15 +148,25 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
                 output = model_fn(data)
             else:
                 output, _ = model(data, init_hidden)
-            loss = criterion_fn(output[-1:], targets[-1:])
-            total_loss += targets.size(1) * loss.item()
+            if args.entropy:
+                losses, entropies = get_perplexities_entropies(output_layer(output[-1]), target[-1])
+                all_losses.append(losses.tolist())
+                all_entropies.append(entropies.tolist())
+                total_loss += losses.sum()
+                total_entropy += entropies.sum()
+                loss = losses.mean()
+                entropy = entropies.mean()
+            else:
+                loss = criterion_fn(output[-1:], targets[-1:])
+                entropy = 0.
+                total_loss += targets.size(1) * loss.item()
             n += targets.size(1)
-            t.set_postfix_str('loss={:8.6f} ppl={:7.3f}'.format(loss, math.exp(loss)))
+            t.set_postfix_str('loss={:8.6f} ppl={:7.3f} entropy={:7.3f}'.format(loss, math.exp(loss), entropy))
 
-        print('Last word: {}'.format(corpus.dictionary.idx2word[data[-1, -1]]))
+        print('Last word: {}'.format(corpus.vocab.id_to_token_map_py[int(data[-1, -1])]))
         print('Total: {}'.format(n))
 
-    return total_loss / n, all_losses
+    return total_loss / n, total_entropy / n, all_losses, all_entropies
 
 if not args.func:
     loss, all_losses = evaluate(
@@ -210,7 +222,7 @@ print(loop_range)
 for boundary in loop_range:
     log_msg, cfunc, res_label = pick_perturbation(args, boundary)
     print(log_msg)
-    loss, all_losses = evaluate(
+    loss, entropy, all_losses, all_entropies = evaluate(
         data_, pos_data,
         lambda data, pdata, targets, ptargets, args: perturb_data(
             data.transpose(1, 0), pdata.transpose(1, 0) if pdata is not None else None,
@@ -218,8 +230,9 @@ for boundary in loop_range:
             targets[-1], ptargets[-1] if ptargets is not None else None,
             pos2vocab),
         args)
-    print('{} loss: {}, ppl: {}'.format(res_label, loss, math.exp(loss)))
+    print('{} loss: {}, ppl: {}, entropy: {}'.format(res_label, loss, math.exp(loss), entropy))
 
     with open(os.path.join(args.logdir, prefix+str(boundary)), 'wb') as f:
         pickle.dump(res_label, f)
         pickle.dump(all_losses, f)
+        pickle.dump(all_entropies, f)
