@@ -15,7 +15,7 @@ import model
 import importlib
 import texar as tx
 
-from utils import batchify, get_batch, repackage_hidden, map_structure, loss_repr, get_model_fn, get_criterion_fn
+from utils import batchify, get_batch, repackage_hidden, map_structure, loss_repr, get_model_fn, get_criterion_fn, get_output_layer
 from gpt2_decoder import GPT2Decoder
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
@@ -192,7 +192,7 @@ params = list(model.parameters()) + list(criterion.parameters())
 total_params = sum(map(torch.Tensor.nelement, params))
 print('Args: {}'.format(args))
 print('Model total parameters: {}'.format(total_params))
-print('Output layer parameters: {}'.format(sum(map(torch.Tensor.nelement, (model.decoder.output_layer if is_GPT2 else model.decoder).parameters()))))
+print('Output layer parameters: {}'.format(sum(map(torch.Tensor.nelement, get_output_layer(model, is_GPT2).parameters()))))
 
 if optimizer is None:
     # Ensure the optimizer is optimizing params, which includes both the model's weights as well as the criterion's weight (i.e. Adaptive Softmax)
