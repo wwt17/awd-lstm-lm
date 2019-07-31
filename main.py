@@ -104,6 +104,7 @@ def model_save(fn):
         torch.save([m.state_dict() for m in [model, criterion, optimizer]], f)
 
 def model_load(fn):
+    global model, criterion, optimizer
     with open(fn, 'rb') as f:
         state_dicts = torch.load(f)
     for m, state_dict in zip([model, criterion, optimizer], state_dicts):
@@ -150,19 +151,7 @@ if is_GPT2:
     model = GPT2Decoder(hparams=config_model)
 else:
     model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
-###
-if args.resume:
-    print('Resuming model ...')
-    model_load(args.resume)
-    optimizer.param_groups[0]['lr'] = args.lr
-    if not is_GPT2:
-        model.dropouti, model.dropouth, model.dropout, args.dropoute = args.dropouti, args.dropouth, args.dropout, args.dropoute
-        if args.wdrop:
-            from weight_drop import WeightDrop
-            for rnn in model.rnns:
-                if type(rnn) == WeightDrop: rnn.dropout = args.wdrop
-                elif rnn.zoneout > 0: rnn.zoneout = args.wdrop
-###
+
 if not criterion:
     splits = []
     if ntokens > 500000:
@@ -191,6 +180,24 @@ total_params = sum(map(torch.Tensor.nelement, params))
 print('Args: {}'.format(args))
 print('Model total parameters: {}'.format(total_params))
 print('Output layer parameters: {}'.format(sum(map(torch.Tensor.nelement, (model.decoder.output_layer if is_GPT2 else model.decoder).parameters()))))
+
+# Ensure the optimizer is optimizing params, which includes both the model's weights as well as the criterion's weight (i.e. Adaptive Softmax)
+if args.optimizer == 'sgd':
+    optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
+elif args.optimizer == 'adam':
+    optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
+
+if args.resume:
+    print('Resuming model ...')
+    model_load(args.resume)
+    optimizer.param_groups[0]['lr'] = args.lr
+    if not is_GPT2:
+        model.dropouti, model.dropouth, model.dropout, args.dropoute = args.dropouti, args.dropouth, args.dropout, args.dropoute
+        if args.wdrop:
+            from weight_drop import WeightDrop
+            for rnn in model.rnns:
+                if type(rnn) == WeightDrop: rnn.dropout = args.wdrop
+                elif rnn.zoneout > 0: rnn.zoneout = args.wdrop
 
 ###############################################################################
 # Training code
@@ -345,12 +352,6 @@ best_val_loss = []
 
 # At any point you can hit Ctrl + C to break out of training early.
 try:
-    optimizer = None
-    # Ensure the optimizer is optimizing params, which includes both the model's weights as well as the criterion's weight (i.e. Adaptive Softmax)
-    if args.optimizer == 'sgd':
-        optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
-    elif args.optimizer == 'adam':
-        optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
         train()
