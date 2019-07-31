@@ -101,14 +101,12 @@ if torch.cuda.is_available():
 
 def model_save(fn):
     with open(fn, 'wb') as f:
-        torch.save([m.state_dict() for m in [model, criterion, optimizer]], f)
+        torch.save((model, criterion, optimizer), f)
 
 def model_load(fn):
     global model, criterion, optimizer
     with open(fn, 'rb') as f:
-        state_dicts = torch.load(f)
-    for m, state_dict in zip([model, criterion, optimizer], state_dicts):
-        m.load_state_dict(state_dict)
+        model, criterion, optimizer = torch.load(f)
 
 corpus = data.prepare_corpus(args.data)
 
