@@ -162,6 +162,21 @@ if not criterion:
         splits = [2800, 20000, 76000]
     print('Using', splits)
     criterion = SplitCrossEntropyLoss(config_model['embed']['dim'] if is_GPT2 else args.emsize, splits=splits, verbose=False)
+
+optimizer = None
+
+if args.resume:
+    print('Resuming model ...')
+    model_load(args.resume)
+    optimizer.param_groups[0]['lr'] = args.lr
+    if not is_GPT2:
+        model.dropouti, model.dropouth, model.dropout, args.dropoute = args.dropouti, args.dropouth, args.dropout, args.dropoute
+        if args.wdrop:
+            from weight_drop import WeightDrop
+            for rnn in model.rnns:
+                if type(rnn) == WeightDrop: rnn.dropout = args.wdrop
+                elif rnn.zoneout > 0: rnn.zoneout = args.wdrop
+
 ###
 if args.cuda:
     device = torch.device('cuda')
@@ -179,23 +194,12 @@ print('Args: {}'.format(args))
 print('Model total parameters: {}'.format(total_params))
 print('Output layer parameters: {}'.format(sum(map(torch.Tensor.nelement, (model.decoder.output_layer if is_GPT2 else model.decoder).parameters()))))
 
-# Ensure the optimizer is optimizing params, which includes both the model's weights as well as the criterion's weight (i.e. Adaptive Softmax)
-if args.optimizer == 'sgd':
-    optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
-elif args.optimizer == 'adam':
-    optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
-
-if args.resume:
-    print('Resuming model ...')
-    model_load(args.resume)
-    optimizer.param_groups[0]['lr'] = args.lr
-    if not is_GPT2:
-        model.dropouti, model.dropouth, model.dropout, args.dropoute = args.dropouti, args.dropouth, args.dropout, args.dropoute
-        if args.wdrop:
-            from weight_drop import WeightDrop
-            for rnn in model.rnns:
-                if type(rnn) == WeightDrop: rnn.dropout = args.wdrop
-                elif rnn.zoneout > 0: rnn.zoneout = args.wdrop
+if optimizer is None:
+    # Ensure the optimizer is optimizing params, which includes both the model's weights as well as the criterion's weight (i.e. Adaptive Softmax)
+    if args.optimizer == 'sgd':
+        optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
+    elif args.optimizer == 'adam':
+        optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
 
 ###############################################################################
 # Training code
