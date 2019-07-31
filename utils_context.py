@@ -62,6 +62,6 @@ def get_vocab_all_pos(pos_datafile, corpus_dict):
 def get_perplexities_entropies(logits, target):
     log_softmaxed = F.log_softmax(logits, -1)
     softmaxed = F.softmax(logits, -1)
-    perplexities = torch.gather(log_softmaxed, -1, target)
+    perplexities = -torch.gather(log_softmaxed, -1, target.unsqueeze(-1)).squeeze(-1)
     entropies = -(softmaxed * log_softmaxed).sum(-1)
     return perplexities, entropies

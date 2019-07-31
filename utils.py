@@ -52,8 +52,12 @@ def get_model_fn(model):
     return model_fn
 
 
+def get_output_layer(model, is_GPT2):
+    return model.decoder.output_layer if is_GPT2 else model.decoder
+
+
 def get_criterion_fn(model, criterion, is_GPT2):
-    output_layer = model.decoder.output_layer if is_GPT2 else model.decoder
+    output_layer = get_output_layer(model, is_GPT2)
     def criterion_fn(output, targets):
         return criterion(output_layer.weight, output_layer.bias, output.reshape(-1, output.size(-1)), targets.reshape(-1))
     return criterion_fn

@@ -14,7 +14,7 @@ import data
 import model
 
 from utils_context import batchify_context, get_context_batch, get_vocab_all_pos, get_perplexities_entropies
-from utils import get_model_fn, get_criterion_fn
+from utils import get_model_fn, get_criterion_fn, get_output_layer
 from gpt2_decoder import GPT2Decoder
 # this is not a good practice, but making an exception in this case
 from perturbations import *
@@ -87,6 +87,7 @@ else:
 if is_GPT2:
     model_fn = get_model_fn(model)
 
+output_layer = get_output_layer(model, is_GPT2)
 criterion_fn = get_criterion_fn(model, criterion, is_GPT2)
 
 corpus = data.prepare_corpus(args.data)
@@ -120,7 +121,7 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
     model.eval()
 
     n = 0
-    total_loss, total_entopy = 0., 0.
+    total_loss, total_entropy = 0., 0.
     all_losses, all_entropies = [], []
 
     # Number of batches excludes the last seq_len tokens as start of context, since the target index would lie out of bounds.
@@ -149,7 +150,7 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
             else:
                 output, _ = model(data, init_hidden)
             if args.entropy:
-                losses, entropies = get_perplexities_entropies(output_layer(output[-1]), target[-1])
+                losses, entropies = get_perplexities_entropies(output_layer(output[-1]), targets[-1])
                 all_losses.append(losses.tolist())
                 all_entropies.append(entropies.tolist())
                 total_loss += losses.sum()
