@@ -78,8 +78,10 @@ parser.add_argument('--resume', type=str,  default='',
                     help='path of model to resume')
 parser.add_argument('--optimizer', type=str,  default='sgd', choices=['sgd', 'adam'],
                     help='optimizer to use (sgd, adam)')
-parser.add_argument('--when', nargs="+", type=int, default=[-1],
+parser.add_argument('--when', nargs="+", type=int, default=[],
                     help='When (which epochs) to divide the learning rate by 10 - accepts multiple')
+parser.add_argument('--ppl_gap', type=float, default=0.3,
+                    help='if val_ppl > best_ppl - ppl_gap then reduce lr')
 parser.add_argument('--get_output_hidden', action='store_true',
                     help='whether to get output and hidden states')
 parser.add_argument('--save_output_hidden_path', type=str, default='output_hidden',
@@ -168,7 +170,7 @@ optimizer = None
 if args.resume:
     print('Resuming model ...')
     model_load(args.resume)
-    optimizer.param_groups[0]['lr'] = args.lr
+    # optimizer.param_groups[0]['lr'] = args.lr
     if not is_GPT2:
         model.dropouti, model.dropouth, model.dropout, args.dropoute = args.dropouti, args.dropouth, args.dropout, args.dropoute
         if args.wdrop:
@@ -384,6 +386,8 @@ try:
               epoch, (time.time() - epoch_start_time)))
             print('-' * 89)
 
+            need_to_reduce_lr = (math.exp(val_loss) > math.exp(stored_loss) - args.ppl_gap)
+
             if val_loss < stored_loss:
                 model_save(args.save)
                 print('Saving model (new best validation)')
@@ -393,7 +397,7 @@ try:
                 print('Switching to ASGD')
                 optimizer = torch.optim.ASGD(model.parameters(), lr=args.lr, t0=0, lambd=0., weight_decay=args.wdecay)
 
-            if epoch in args.when:
+            if epoch in args.when or need_to_reduce_lr:
                 print('Saving model before learning rate decreased')
                 model_save('{}.e{}'.format(args.save, epoch))
                 print('Dividing learning rate by 10')
