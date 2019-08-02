@@ -29,7 +29,7 @@ parser.add_argument('--nhid', type=int, default=1150,
                     help='number of hidden units per layer')
 parser.add_argument('--nlayers', type=int, default=3,
                     help='number of layers')
-parser.add_argument('--lr', type=float, default=30,
+parser.add_argument('--lr', type=float, default=None,
                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=0.25,
                     help='gradient clipping')
@@ -170,7 +170,8 @@ optimizer = None
 if args.resume:
     print('Resuming model ...')
     model_load(args.resume)
-    # optimizer.param_groups[0]['lr'] = args.lr
+    if args.lr is not None:
+        optimizer.param_groups[0]['lr'] = args.lr
     if not is_GPT2:
         model.dropouti, model.dropouth, model.dropout, args.dropoute = args.dropouti, args.dropouth, args.dropout, args.dropoute
         if args.wdrop:
