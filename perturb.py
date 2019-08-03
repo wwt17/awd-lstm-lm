@@ -162,24 +162,31 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
                 entropy = 0.
                 total_loss += targets.size(1) * loss.item()
             n += targets.size(1)
-            t.set_postfix_str('loss={:8.6f} ppl={:7.3f} entropy={:7.3f}'.format(loss, math.exp(loss), entropy))
+            t.set_postfix_str('loss={:8.6f} ppl={:7.3f} entropy={:7.5f}'.format(loss, math.exp(loss), entropy))
 
         print('Last word: {}'.format(corpus.vocab.id_to_token_map_py[int(data[-1, -1])]))
         print('Total: {}'.format(n))
 
     return total_loss / n, total_entropy / n, all_losses, all_entropies
 
+def print_results(prefix, loss, entropy):
+    print('{}: loss: {}, ppl: {}, entropy: {}'.format(prefix, loss, math.exp(loss), entropy))
+
+def save_results(file_name, items):
+    with open(os.path.join(args.logdir, file_name), 'wb') as f:
+        for item in items:
+            pickle.dump(item, f)
+
 if not args.func:
-    loss, all_losses = evaluate(
+    loss, entropy, all_losses, all_entropies = evaluate(
         data_, pos_data,
         lambda data, pdata, targets, ptargets, args: data,
         args)
-    print('seq_len: {}, loss: {}, ppl: {}'.format(args.seq_len, loss, math.exp(loss)))
-
-    if False:
-        with open(os.path.join(args.logdir, 'per_token_scores_{}_{}'.format(args.stage, args.seq_len)), 'wb') as f:
-            pickle.dump(args.seq_len, f)
-            pickle.dump(all_losses, f)
+    print_results('seq_len={}'.format(args.seq_len), loss, entropy)
+    save_results(
+        'per_token_scores_{}_{}'.format(args.stage, args.seq_len),
+        [args.seq_len, loss, entropy, all_losses, all_entropies],
+    )
 
     sys.exit(0)
 
@@ -231,9 +238,8 @@ for boundary in loop_range:
             targets[-1], ptargets[-1] if ptargets is not None else None,
             pos2vocab),
         args)
-    print('{} loss: {}, ppl: {}, entropy: {}'.format(res_label, loss, math.exp(loss), entropy))
-
-    with open(os.path.join(args.logdir, prefix+str(boundary)), 'wb') as f:
-        pickle.dump(res_label, f)
-        pickle.dump(all_losses, f)
-        pickle.dump(all_entropies, f)
+    print_results(res_label, loss, entropy)
+    save_results(
+        prefix+str(boundary),
+        [res_label, loss, entropy, all_losses, all_entropies],
+    )
