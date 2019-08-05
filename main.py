@@ -152,6 +152,8 @@ if is_GPT2:
 else:
     model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
 
+last_size = config_model['embed']['dim'] if is_GPT2 else args.emsize
+
 if not criterion:
     splits = []
     if ntokens > 500000:
@@ -163,7 +165,7 @@ if not criterion:
         # WikiText-103
         splits = [2800, 20000, 76000]
     print('Using', splits)
-    criterion = SplitCrossEntropyLoss(config_model['embed']['dim'] if is_GPT2 else args.emsize, splits=splits, verbose=False)
+    criterion = SplitCrossEntropyLoss(last_size, splits=splits, verbose=False)
 
 optimizer = None
 
@@ -242,7 +244,6 @@ if args.get_output_hidden:
         save_path = os.path.join(args.save_output_hidden_path, '{}.h5py'.format(stage))
         with h5py.File(save_path, 'w') as f:
             n = dataset.size(0) - 1
-            last_size = ninp if is_GPT2 or tie_weights else nhid
             m_output = f.create_dataset('output', (n, last_size), dtype='f')
             if is_GPT2:
                 m = m_output
@@ -260,7 +261,7 @@ if args.get_output_hidden:
             for states, targets in all_output_hidden(dataset):
                 seq_len = len(targets)
                 def write(t, m):
-                    m[p : p + seq_len] = t.unsqueeze(-2)
+                    m[p : p + seq_len] = t.squeeze(-2).cpu()
                 map_structure(write, states, m)
                 output = states if is_GPT2 else states[0]
                 loss = criterion_fn(output, targets)
