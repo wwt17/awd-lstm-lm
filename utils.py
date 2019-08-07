@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import math
 import texar as tx
 
@@ -61,3 +62,11 @@ def get_criterion_fn(model, criterion, is_GPT2):
     def criterion_fn(output, targets):
         return criterion(output_layer.weight, output_layer.bias, output.reshape(-1, output.size(-1)), targets.reshape(-1))
     return criterion_fn
+
+
+def get_perplexities_entropies(logits, target):
+    log_softmaxed = F.log_softmax(logits, -1)
+    softmaxed = F.softmax(logits, -1)
+    perplexities = -torch.gather(log_softmaxed, -1, target.unsqueeze(-1)).squeeze(-1)
+    entropies = -(softmaxed * log_softmaxed).sum(-1)
+    return perplexities, entropies
