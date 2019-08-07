@@ -15,7 +15,7 @@ import model
 import importlib
 import texar as tx
 
-from utils import batchify, get_batch, repackage_hidden, map_structure, loss_repr, get_model_fn, get_criterion_fn, get_output_layer
+from utils import batchify, get_batch, repackage_hidden, map_structure, loss_repr, get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies
 from gpt2_decoder import GPT2Decoder
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
@@ -86,6 +86,8 @@ parser.add_argument('--get_output_hidden', action='store_true',
                     help='whether to get output and hidden states')
 parser.add_argument('--save_output_hidden_path', type=str, default='output_hidden',
                     help='path to save output and hidden states')
+parser.add_argument('--eval_entropy', action='store_true',
+                    help='get entropy in evaluation')
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
@@ -197,7 +199,8 @@ params = list(model.parameters()) + list(criterion.parameters())
 total_params = sum(map(torch.Tensor.nelement, params))
 print('Args: {}'.format(args))
 print('Model total parameters: {}'.format(total_params))
-print('Output layer parameters: {}'.format(sum(map(torch.Tensor.nelement, get_output_layer(model, is_GPT2).parameters()))))
+output_layer = get_output_layer(model, is_GPT2)
+print('Output layer parameters: {}'.format(sum(map(torch.Tensor.nelement, output_layer.parameters()))))
 
 if optimizer is None:
     # Ensure the optimizer is optimizing params, which includes both the model's weights as well as the criterion's weight (i.e. Adaptive Softmax)
@@ -276,7 +279,7 @@ def evaluate(data_source, batch_size, prefix):
     # Turn on evaluation mode which disables dropout.
     model.eval()
     if args.model == 'QRNN': model.reset()
-    total_loss = 0.
+    total_loss, total_entropy = 0., 0.
     with torch.no_grad():
         seq_len = args.bptt
         if not is_GPT2:
@@ -288,10 +291,17 @@ def evaluate(data_source, batch_size, prefix):
             else:
                 output, hidden = model(data, hidden)
                 hidden = repackage_hidden(hidden)
-            loss = criterion_fn(output, targets)
-            total_loss += len(data) * loss.item()
-    mean_loss = total_loss / len(data_source)
-    print('{} {}'.format(prefix, loss_repr(mean_loss)))
+            if args.eval_entropy:
+                losses, entropies = get_perplexities_entropies(output_layer(output), targets)
+                total_loss += losses.sum()
+                total_entropy += entropies.sum()
+            else:
+                loss = criterion_fn(output, targets)
+                total_loss += len(data) * loss.item() * batch_size
+    total_tokens = len(data_source) * batch_size
+    mean_loss = total_loss / total_tokens
+    mean_entropy = total_entropy / total_tokens
+    print('{} {} | entropy {}'.format(prefix, loss_repr(mean_loss), mean_entropy))
     return mean_loss
 
 

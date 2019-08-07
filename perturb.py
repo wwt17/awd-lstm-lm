@@ -13,8 +13,8 @@ import torch.nn as nn
 import data
 import model
 
-from utils_context import batchify_context, get_context_batch, get_vocab_all_pos, get_perplexities_entropies
-from utils import get_model_fn, get_criterion_fn, get_output_layer
+from utils_context import batchify_context, get_context_batch, get_vocab_all_pos
+from utils import get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies
 from gpt2_decoder import GPT2Decoder
 # this is not a good practice, but making an exception in this case
 from perturbations import *
