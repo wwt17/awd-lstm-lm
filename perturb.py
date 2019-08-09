@@ -9,12 +9,13 @@ from tqdm import tqdm
 
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader
 
 import data
 import model
 
-from utils_context import batchify_context, get_context_batch, get_vocab_all_pos
-from utils import get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies
+from data import FixedLengthContextDataset, get_vocab_all_pos
+from utils import map_structure, get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies
 from gpt2_decoder import GPT2Decoder
 # this is not a good practice, but making an exception in this case
 from perturbations import *
@@ -60,6 +61,8 @@ parser.add_argument('--use_range', nargs='+', type=lambda s: list(map(int, s)),
                     help='Use these values for the boundary loop, but first convert to ints. Sample usage is --use_range 5 20 100')
 parser.add_argument('--entropy', action='store_true',
                     help='Get entropy')
+parser.add_argument('--num_workers', type=int, default=12,
+                    help='Number of workers to load dataset')
 args = parser.parse_args()
 print(args)
 
@@ -102,18 +105,14 @@ else:
     pos_corpus = None
 
 print('On {} set!!!'.format(args.stage))
-data_ = batchify_context(getattr(corpus, args.stage), args.batch_size)
+data_ = getattr(corpus, args.stage)
 if pos_corpus is not None:
-    pos_data = batchify_context(getattr(pos_corpus, args.stage), args.batch_size)
+    pos_data = getattr(pos_corpus, args.stage)
     pos_dict = pos_corpus.vocab
 else:
     pos_data = None
     pos_dict = None
 
-if args.cuda:
-    data_ = data_.cuda()
-    if pos_corpus is not None:
-        pos_data = pos_data.cuda()
 print('Made batches.')
 
 def evaluate(data_source, pdata_source, perturb_fn, args):
@@ -128,21 +127,44 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
     # Skip examples at the beginning to ensure the first target is the same for each experiment.
     # All experiments then operate on the same examples.
     # Select the max_seq_len as the largest context size you'd like to test.
-    nbatches = (data_source.size(0) - args.seq_len) // args.batch_size
     examples_to_ignore = args.max_seq_len - args.seq_len
     print('Number of examples to ignore: {}'.format(examples_to_ignore))
-    batches_to_ignore = examples_to_ignore // args.batch_size
+    data_source = FixedLengthContextDataset(data_source[examples_to_ignore:], args.seq_len)
+    pdata_source = FixedLengthContextDataset(pdata_source[examples_to_ignore:], args.seq_len) if pdata_source is not None else None
 
     with torch.no_grad():
         if not is_GPT2:
             # when using your own LM, ensure the init hidden function exists!
             init_hidden = model.init_hidden(args.batch_size)
-        t = tqdm(range(batches_to_ignore, nbatches))
-        for i in t:
-            data, targets = get_context_batch(data_source, i, args.batch_size, args.seq_len)
+        data_loader = DataLoader(
+            data_source,
+            batch_size=args.batch_size,
+            shuffle=False,
+            drop_last=False,
+            num_workers=args.num_workers,
+        )
+        pdata_loader = DataLoader(
+            pdata_source,
+            batch_size=args.batch_size,
+            shuffle=False,
+            drop_last=False,
+            num_workers=args.num_workers,
+        ) if pdata_source is not None else None
+        t = tqdm(data_loader)
+        def convert_data_tuple(data_tuple):
+            x, y = data_tuple
+            return x.transpose(0, 1), y.transpose(0, 1)
+        for data_item in (t if pdata_loader is None else zip(t, pdata_loader)):
+            if args.cuda:
+                data_item = map_structure(lambda t: t.cuda(), data_item)
+            if pdata_loader is None:
+                data_tuple = data_item
+            else:
+                data_tuple, pdata_tuple = data_item
+            data, targets = convert_data_tuple(data_tuple)
             if n == 0:
                 print('First word: {}'.format(corpus.vocab.id_to_token_map_py[int(data[-1, 0])]))
-            pdata, ptargets = get_context_batch(pdata_source, i, args.batch_size, args.seq_len) if pdata_source is not None else (None, None)
+            pdata, ptargets = convert_data_tuple(pdata_tuple) if pdata_loader is not None else (None, None)
             data = perturb_fn(data, pdata, targets, ptargets, args)
 
             if is_GPT2:

@@ -51,6 +51,57 @@ class Corpus(object):
         return ids
 
 
+def prepare_corpus(data_name):
+    import hashlib
+    fn = 'corpus.{}.data'.format(hashlib.md5(data_name.encode()).hexdigest())
+    if os.path.exists(fn):
+        print('Loading cached dataset...')
+        corpus = torch.load(fn)
+    else:
+        print('Producing dataset...')
+        corpus = Corpus(data_name)
+        torch.save(corpus, fn)
+    return corpus
+
+
+def get_vocab_all_pos(pos_datafile, corpus_dict):
+    """
+    Generate a map.
+    Keys = POS tag
+    Values = a list of words with that POS tag, sorted by frequency
+    """
+    pos_ = {}
+    with open(pos_datafile, 'r') as f:
+        for line in f:
+            line = line.strip().split(' ') + ['<eos>_<eos>'] if len(line.strip()) > 0 else ['<eos>_<eos>']
+            for word_pair in line:
+                w, p = word_pair.split('_')
+                if p not in pos_:
+                    pos_[p] = {}
+                token_id = corpus_dict.word2idx[w]
+                pos_[p][token_id] = corpus_dict.counter[token_id]
+
+    for tag in pos_:
+        # sort dictionary by rank and throw away the frequencies
+        pos_[tag] = sorted(pos_[tag], key=pos_[tag].get)
+
+    return pos_
+
+
+class FixedLengthContextDataset(Dataset):
+    def __init__(self, seq, context_size):
+        self.seq = seq
+        self.context_size = context_size
+
+    def __len__(self):
+        return len(self.seq) - self.context_size
+
+    def __getitem__(self, i):
+        x = self.seq[i : i + self.context_size]
+        y = self.seq[i + 1 : i + 1 + self.context_size]
+        return x, y
+
+
 class HiddenStateDataset(Dataset):
     def __init__(self, seq, hidden_state_h5py, context_size, pad_id, predict_all_layers, predict_c):
         self.context_size = context_size
@@ -95,16 +146,3 @@ class HiddenStateDataset(Dataset):
             return hidden_state[:, -h-c : -c]
         else:
             return hidden_state[:, -h:]
-
-
-def prepare_corpus(data_name):
-    import hashlib
-    fn = 'corpus.{}.data'.format(hashlib.md5(data_name.encode()).hexdigest())
-    if os.path.exists(fn):
-        print('Loading cached dataset...')
-        corpus = torch.load(fn)
-    else:
-        print('Producing dataset...')
-        corpus = Corpus(data_name)
-        torch.save(corpus, fn)
-    return corpus
