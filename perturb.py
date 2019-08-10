@@ -15,7 +15,7 @@ import data
 import model
 
 from data import FixedLengthContextDataset, get_vocab_all_pos
-from utils import map_structure, get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies
+from utils import map_structure, get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies, convert_data_tuple
 from gpt2_decoder import GPT2Decoder
 # this is not a good practice, but making an exception in this case
 from perturbations import *
@@ -151,9 +151,6 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
             num_workers=args.num_workers,
         ) if pdata_source is not None else None
         t = tqdm(data_loader)
-        def convert_data_tuple(data_tuple):
-            x, y = data_tuple
-            return x.transpose(0, 1), y.transpose(0, 1)
         for data_item in (t if pdata_loader is None else zip(t, pdata_loader)):
             if args.cuda:
                 data_item = map_structure(lambda t: t.cuda(), data_item)

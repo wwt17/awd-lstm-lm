@@ -8,6 +8,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader
 
 import data
 import model
@@ -15,7 +16,8 @@ import model
 import importlib
 import texar as tx
 
-from utils import batchify, get_batch, repackage_hidden, map_structure, loss_repr, get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies
+from data import FixedLengthContextDataset
+from utils import batchify, get_batch, repackage_hidden, map_structure, loss_repr, get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies, convert_data_tuple
 from gpt2_decoder import GPT2Decoder
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
@@ -86,8 +88,12 @@ parser.add_argument('--get_output_hidden', action='store_true',
                     help='whether to get output and hidden states')
 parser.add_argument('--save_output_hidden_path', type=str, default='output_hidden',
                     help='path to save output and hidden states')
+parser.add_argument('--get_output_hidden_loss', action='store_true',
+                    help='whether to get loss when getting output and hidden states')
 parser.add_argument('--eval_entropy', action='store_true',
                     help='get entropy in evaluation')
+parser.add_argument('--num_workers', type=int, default=12,
+                    help='number of workers to load data')
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
@@ -114,22 +120,25 @@ def model_load(fn):
 
 corpus = data.prepare_corpus(args.data)
 
-if args.get_output_hidden:
-    train_batch_size = 1
-    eval_batch_size = 1
-    test_batch_size = 1
-else:
-    train_batch_size = args.batch_size
-    eval_batch_size = args.eval_batch_size
-    test_batch_size = args.test_batch_size
-train_data = batchify(corpus.train, train_batch_size, args)
-val_data = batchify(corpus.valid, eval_batch_size, args)
-test_data = batchify(corpus.test, test_batch_size, args)
-datasets = {
-    'train': train_data,
-    'valid': val_data,
-    'test': test_data,
+train_batch_size = args.batch_size
+eval_batch_size = args.eval_batch_size
+test_batch_size = args.test_batch_size
+batch_sizes = {
+    'train': train_batch_size,
+    'valid': eval_batch_size,
+    'test': test_batch_size,
 }
+if args.get_output_hidden:
+    datasets = {stage: getattr(corpus, stage) for stage in ['train', 'valid', 'test']}
+else:
+    train_data = batchify(corpus.train, train_batch_size, args)
+    val_data = batchify(corpus.valid, eval_batch_size, args)
+    test_data = batchify(corpus.test, test_batch_size, args)
+    datasets = {
+        'train': train_data,
+        'valid': val_data,
+        'test': test_data,
+    }
 
 ###############################################################################
 # Build the model
@@ -214,25 +223,6 @@ if optimizer is None:
 ###############################################################################
 
 
-# get hidden
-def all_output_hidden(dataset):
-    with torch.no_grad():
-        if is_GPT2:
-            seq_len = args.bptt
-        else:
-            hidden = model.init_hidden(dataset.size(1))
-            seq_len = 1
-        for i in tqdm(range(0, dataset.size(0) - 1, seq_len)):
-            data, targets = get_batch(dataset, i, seq_len)
-            if is_GPT2:
-                yield model_fn(data), targets
-            else:
-                output, hidden = model(data, hidden)
-                output = output.detach()
-                hidden = repackage_hidden(hidden)
-                yield (output, map_structure(lambda t: t.unsqueeze(0), hidden)), targets
-
-
 if args.get_output_hidden:
     print('To get output and hidden states.')
     model.eval()
@@ -246,7 +236,14 @@ if args.get_output_hidden:
         print('Working on {} set ...'.format(stage))
         save_path = os.path.join(args.save_output_hidden_path, '{}.h5py'.format(stage))
         with h5py.File(save_path, 'w') as f:
-            n = dataset.size(0) - 1
+            if is_GPT2:
+                context_size = args.bptt
+            else:
+                assert batch_size == 1
+                hidden = model.init_hidden(batch_size)
+                context_size = 1
+            dataset = FixedLengthContextDataset(dataset, context_size)
+            n = len(dataset)
             m_output = f.create_dataset('output', (n, last_size), dtype='f')
             if is_GPT2:
                 m = m_output
@@ -259,19 +256,43 @@ if args.get_output_hidden:
                     m_c = grp.create_dataset('c', (n, 1, size), dtype='f')
                     m_hidden.append((m_h, m_c))
                 m = (m_output, m_hidden)
-            total_loss = 0.
+            data_loader = DataLoader(
+                dataset,
+                batch_size=batch_sizes[stage] if is_GPT2 else 1,
+                shuffle=False,
+                drop_last=False,
+                num_workers=args.num_workers,
+            )
             p = 0
-            for states, targets in all_output_hidden(dataset):
-                seq_len = len(targets)
-                def write(t, m):
-                    m[p : p + seq_len] = t.squeeze(-2).cpu()
-                map_structure(write, states, m)
-                output = states if is_GPT2 else states[0]
-                loss = criterion_fn(output, targets)
-                total_loss += loss.item()
-                p += seq_len
-            mean_loss = total_loss / len(dataset)
-            print('| {}'.format(loss_repr(mean_loss)))
+            if args.get_output_hidden_loss:
+                total_loss = 0.
+            with torch.no_grad():
+                t = tqdm(data_loader)
+                for batch_i, data_item in enumerate(t):
+                    if args.cuda:
+                        data_item = map_structure(lambda t: t.cuda(), data_item)
+                    data, targets = convert_data_tuple(data_item)
+                    if is_GPT2:
+                        states, targets = model_fn(data)[-1].unsqueeze(1), targets[-1].unsqueeze(1)
+                    else:
+                        output, hidden = model(data, hidden)
+                        output = output.detach()
+                        hidden = repackage_hidden(hidden)
+                        states, targets = (output, map_structure(lambda t: t.unsqueeze(0), hidden)), targets
+                    seq_len = len(targets)
+                    def write(t, m):
+                        m[p : p + seq_len] = t.squeeze(-2).cpu()
+                    map_structure(write, states, m)
+                    p += seq_len
+                    if args.get_output_hidden_loss:
+                        output = states if is_GPT2 else states[0]
+                        loss = criterion_fn(output, targets)
+                        total_loss += loss.item() * seq_len
+                        if (batch_i + 1) % args.log_interval == 0:
+                            t.set_postfix_str(loss_repr(total_loss / p))
+            if args.get_output_hidden_loss:
+                mean_loss = total_loss / len(dataset)
+                print('| {}'.format(loss_repr(mean_loss)))
     sys.exit(0)
 
 

@@ -70,3 +70,8 @@ def get_perplexities_entropies(logits, target):
     perplexities = -torch.gather(log_softmaxed, -1, target.unsqueeze(-1)).squeeze(-1)
     entropies = -(softmaxed * log_softmaxed).sum(-1)
     return perplexities, entropies
+
+
+def convert_data_tuple(data_tuple):
+    x, y = data_tuple
+    return x.transpose(0, 1), y.transpose(0, 1)
