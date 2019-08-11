@@ -15,7 +15,7 @@ from data import HiddenStateDataset
 import model
 import approx_models
 
-from utils import map_structure
+from utils import map_structure, get_splits
 
 def arg_to_list(t):
     return lambda arg: list(map(t, arg.split(',')))
@@ -162,17 +162,7 @@ with open(args.approx_model, 'rb') as f:
     approx_model, approx_criterion, _ = torch.load(f)
 ###
 if not approx_criterion:
-    splits = []
-    if vocab_size > 500000:
-        # One Billion
-        # This produces fairly even matrix mults for the buckets:
-        # 0: 11723136, 1: 10854630, 2: 11270961, 3: 11219422
-        splits = [4200, 35000, 180000]
-    elif vocab_size > 75000:
-        # WikiText-103
-        splits = [2800, 20000, 76000]
-    print('Using', splits)
-    approx_criterion = SplitCrossEntropyLoss(args.emsize, splits=splits, verbose=False)
+    approx_criterion = SplitCrossEntropyLoss(args.emsize, splits=get_splits(vocab_size), verbose=False)
 
 
 encoder = approx_model.encoder

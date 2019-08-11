@@ -36,6 +36,21 @@ def get_batch(source, i, seq_len):
     return data, target
 
 
+def get_splits(ntokens):
+    if ntokens > 500000:
+        # One Billion
+        # This produces fairly even matrix mults for the buckets:
+        # 0: 11723136, 1: 10854630, 2: 11270961, 3: 11219422
+        splits = [4200, 35000, 180000]
+    elif ntokens > 75000:
+        # WikiText-103
+        splits = [2800, 20000, 76000]
+    else:
+        splits = []
+    print('Using', splits)
+    return splits
+
+
 def loss_repr(loss):
     return 'loss {:5.2f} | ppl {:8.2f} | bpc {:8.3f}'.format(
         loss, math.exp(loss), loss / math.log(2))
@@ -51,6 +66,10 @@ def get_model_fn(model):
         model.decoder._output_layer = output_layer
         return output.raw_output.transpose(0, 1)
     return model_fn
+
+
+def get_embedder(model, is_GPT2):
+    return model.word_embedder if is_GPT2 else model.encoder
 
 
 def get_output_layer(model, is_GPT2):

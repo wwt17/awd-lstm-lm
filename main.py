@@ -17,7 +17,7 @@ import importlib
 import texar as tx
 
 from data import FixedLengthContextDataset
-from utils import batchify, get_batch, repackage_hidden, map_structure, loss_repr, get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies, convert_data_tuple
+from utils import batchify, get_batch, repackage_hidden, map_structure, get_splits, loss_repr, get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies, convert_data_tuple
 from gpt2_decoder import GPT2Decoder
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
@@ -168,17 +168,7 @@ else:
 last_size = config_model['embed']['dim'] if is_GPT2 else args.emsize
 
 if not criterion:
-    splits = []
-    if ntokens > 500000:
-        # One Billion
-        # This produces fairly even matrix mults for the buckets:
-        # 0: 11723136, 1: 10854630, 2: 11270961, 3: 11219422
-        splits = [4200, 35000, 180000]
-    elif ntokens > 75000:
-        # WikiText-103
-        splits = [2800, 20000, 76000]
-    print('Using', splits)
-    criterion = SplitCrossEntropyLoss(last_size, splits=splits, verbose=False)
+    criterion = SplitCrossEntropyLoss(last_size, splits=get_splits(ntokens), verbose=False)
 
 optimizer = None
 
