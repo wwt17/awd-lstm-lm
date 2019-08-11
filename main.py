@@ -90,6 +90,8 @@ parser.add_argument('--save_output_hidden_path', type=str, default='output_hidde
                     help='path to save output and hidden states')
 parser.add_argument('--get_output_hidden_loss', action='store_true',
                     help='whether to get loss when getting output and hidden states')
+parser.add_argument('--sample_gap', type=int, default=1,
+                    help='the gap of two consecutive samples in getting output and hidden states')
 parser.add_argument('--eval_entropy', action='store_true',
                     help='get entropy in evaluation')
 parser.add_argument('--num_workers', type=int, default=12,
@@ -256,6 +258,12 @@ if args.get_output_hidden:
                     m_c = grp.create_dataset('c', (n, 1, size), dtype='f')
                     m_hidden.append((m_h, m_c))
                 m = (m_output, m_hidden)
+            if is_GPT2:
+                sample_indices = list(range(-1, n, args.sample_gap))
+                if sample_indices[-1] != n - 1:
+                    sample_indices.append(n - 1)
+                sample_indices_p = 0
+                dataset = torch.utils.data.Subset(dataset, sample_indices[1:])
             data_loader = DataLoader(
                 dataset,
                 batch_size=batch_sizes[stage] if is_GPT2 else 1,
@@ -273,12 +281,20 @@ if args.get_output_hidden:
                         data_item = map_structure(lambda t: t.cuda(), data_item)
                     data, targets = convert_data_tuple(data_item)
                     if is_GPT2:
-                        states, targets = model_fn(data)[-1].unsqueeze(1), targets[-1].unsqueeze(1)
+                        states = model_fn(data)
+                        states, targets = tuple(map(lambda t: t.transpose(0, 1), (states, targets)))
+                        new_states, new_targets = [], []
+                        for state, target in zip(states, targets):
+                            gap = sample_indices[sample_indices_p + 1] - sample_indices[sample_indices_p]
+                            sample_indices_p += 1
+                            new_states.append(state[-gap:])
+                            new_targets.append(target[-gap:])
+                        states, targets = tuple(map(lambda l: torch.cat(l).unsqueeze(1), (new_states, new_targets)))
                     else:
                         output, hidden = model(data, hidden)
                         output = output.detach()
                         hidden = repackage_hidden(hidden)
-                        states, targets = (output, map_structure(lambda t: t.unsqueeze(0), hidden)), targets
+                        states = (output, map_structure(lambda t: t.unsqueeze(0), hidden))
                     seq_len = len(targets)
                     def write(t, m):
                         m[p : p + seq_len] = t.squeeze(-2).cpu()
@@ -291,7 +307,7 @@ if args.get_output_hidden:
                         if (batch_i + 1) % args.log_interval == 0:
                             t.set_postfix_str(loss_repr(total_loss / p))
             if args.get_output_hidden_loss:
-                mean_loss = total_loss / len(dataset)
+                mean_loss = total_loss / p
                 print('| {}'.format(loss_repr(mean_loss)))
     sys.exit(0)
 
