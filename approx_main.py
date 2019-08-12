@@ -15,7 +15,8 @@ from data import HiddenStateDataset
 import model
 import approx_models
 
-from utils import map_structure, get_splits
+from utils import map_structure, get_splits, get_embedder, get_embedding_size, get_output_layer, get_model_fn, get_criterion_fn
+from gpt2_decoder import GPT2Decoder
 
 def arg_to_list(t):
     return lambda arg: list(map(t, arg.split(',')))
@@ -26,7 +27,7 @@ def int_or_list(arg):
 
 parser = argparse.ArgumentParser(description='PyTorch Approximator of RNN/LSTM Language Model')
 # Path
-parser.add_argument('--data', type=str, default='data/penn/',
+parser.add_argument('--data', type=str, default='data/wikitext-103',
                     help='location of the data corpus')
 parser.add_argument('--output_hidden_path', type=str, default='output_hidden',
                     help='path to saved output and hidden states')
@@ -34,6 +35,8 @@ parser.add_argument('--approx_model', type=str, default='WT2.pt',
                     help='path of model to approxiate')
 parser.add_argument('--ckpt', type=str,  default='',
                     help='path of model to save and resume')
+# target
+parser.add_argument('--approx_distribution', action='store_true')
 # Hidden state
 parser.add_argument('--predict_all_layers', action='store_true')
 parser.add_argument('--predict_c', action='store_true')
@@ -109,6 +112,8 @@ parser.add_argument('--output_dropout', type=float, default=0.,
                     help='dropout applied to output (0 = no dropout)')
 parser.add_argument('--weight_dropout', type=float, default=0.5,
                     help='amount of weight dropout to apply to the hidden matrices')
+parser.add_argument('--eval_approxed_loss', action='store_true',
+                    help='whether to evaluate the loss of the approximated model')
 args = parser.parse_args()
 required_args = {
     'mlp': ['hidden_size'],
@@ -136,14 +141,38 @@ corpus = data.prepare_corpus(args.data)
 
 context_size = args.context_size
 
+###############################################################################
+# Load model
+###############################################################################
+
+from splitcross import SplitCrossEntropyLoss
+approx_criterion = None
+
+vocab_size = corpus.vocab.size
+###
+print('Loading approximated model ...')
+with open(args.approx_model, 'rb') as f:
+    approx_model, approx_criterion, _ = torch.load(f)
+###
+if not approx_criterion:
+    approx_criterion = SplitCrossEntropyLoss(args.emsize, splits=get_splits(vocab_size), verbose=False)
+if args.cuda:
+    approx_model.cuda()
+    approx_criterion.cuda()
+is_GPT2 = isinstance(approx_model, GPT2Decoder)
+
+###############################################################################
+# Load dataset
+###############################################################################
+
 datasets = {
     stage: HiddenStateDataset(
         getattr(corpus, stage),
         os.path.join(args.output_hidden_path, '{}.h5py'.format(stage)),
         context_size,
-        corpus.dictionary.eos_id,
-        args.predict_all_layers,
-        args.predict_c,
+        is_GPT2=is_GPT2,
+        predict_all_layers=args.predict_all_layers,
+        predict_c=args.predict_c,
     )
     for stage in ['train', 'valid', 'test']
 }
@@ -152,37 +181,25 @@ datasets = {
 # Build the model
 ###############################################################################
 
-from splitcross import SplitCrossEntropyLoss
-approx_criterion = None
+embedder = get_embedder(approx_model, is_GPT2)
+output_layer = get_output_layer(approx_model, is_GPT2)
 
-vocab_size = len(corpus.dictionary)
-###
-print('Loading approximated model ...')
-with open(args.approx_model, 'rb') as f:
-    approx_model, approx_criterion, _ = torch.load(f)
-###
-if not approx_criterion:
-    approx_criterion = SplitCrossEntropyLoss(args.emsize, splits=get_splits(vocab_size), verbose=False)
-
-
-encoder = approx_model.encoder
-decoder = approx_model.decoder
-
-embedding_size = encoder.weight.size(1)
+embedding_size = get_embedding_size(embedder, is_GPT2)
 hidden_size = args.hidden_size
-target_size = datasets['train'].target_size
-print('embedding_size={} hidden_size={} target_size={}'.format(
-    embedding_size, hidden_size, target_size))
+output_size = datasets['train'].target_size
+# output_size = output_layer.weight.size(1)
+print('embedding_size={} hidden_size={} output_size={}'.format(
+    embedding_size, hidden_size, output_size))
 
 if args.model_type == 'mlp':
     model = approx_models.MLP_Approximator(
-        context_size, embedding_size, hidden_size, target_size,
+        context_size, embedding_size, hidden_size, output_size,
         args.input_dropout, args.hidden_dropout, args.output_dropout,
         args.weight_dropout)
 elif args.model_type == 'cnn':
     model = approx_models.CNN_Approximator(
         context_size, embedding_size, args.n_layers, args.channels,
-        args.kernel_size, target_size, variational=args.variational,
+        args.kernel_size, output_size, variational=args.variational,
         padding=args.padding, residual=args.residual,
         output_layer_type=args.output_layer_type,
         input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
@@ -190,23 +207,24 @@ elif args.model_type == 'cnn':
 elif args.model_type == 'lstm':
     model = approx_models.LSTM_Approximator(
         context_size, embedding_size, hidden_size, args.n_layers,
-        None if args.no_transform_output else target_size,
+        None if args.no_transform_output else output_size,
         input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
         output_dropout=args.output_dropout)
 elif args.model_type == 'transformer':
     model = approx_models.Transformer_Approximator(
         context_size, embedding_size, hidden_size, args.n_blocks, args.n_heads,
-        target_size, output_layer_type=args.output_layer_type,
+        output_size, output_layer_type=args.output_layer_type,
         embedding_dropout=args.input_dropout,
         residual_dropout=args.hidden_dropout,
         multihead_dropout=args.hidden_dropout)
 criterion = nn.MSELoss()
 if args.cuda:
-    approx_criterion.cuda()
-    encoder.cuda()
-    decoder.cuda()
     model.cuda()
     criterion.cuda()
+approx_model.eval()
+if is_GPT2:
+    approx_model_fn = get_model_fn(approx_model)
+approx_criterion_fn = get_criterion_fn(approx_model, approx_criterion, is_GPT2)
 params = list(model.parameters()) + list(criterion.parameters())
 print('parameters:')
 for name, param in list(model.named_parameters()) + list(criterion.named_parameters()):
@@ -222,22 +240,11 @@ elif args.optimizer == 'adam':
 global_step = 0
 
 def model_load(path):
-    states = torch.load(model_path)
-    for module, state_dict in zip((model, criterion, optimizer), states):
-        module.load_state_dict(state_dict)
-
-    global global_step
-    if len(states) > 3:
-        global_step = states[3]
-    else:
-        global_step = list(states[2]['state'].values())[0]['step']
+    global model, criterion, optimizer, global_step
+    model, criterion, optimizer, global_step = torch.load(model_path)
 
 def model_save(path):
-    global global_step
-    torch.save(
-        tuple(module.state_dict() for module in (model, criterion, optimizer))
-        + (global_step,),
-        path)
+    torch.save((model, criterion, optimizer, global_step), path)
 
 os.makedirs(args.ckpt, exist_ok=True)
 model_path = os.path.join(args.ckpt, 'best.pt')
@@ -268,22 +275,34 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
     )
     total_loss = 0.
     total_approx_loss = 0.
+    if args.eval_approxed_loss:
+        total_approxed_loss = 0.
     with torch.no_grad():
-        for x, y, target in tqdm(data_loader, desc=prefix, dynamic_ncols=True):
+        t = tqdm(data_loader, desc=prefix, dynamic_ncols=True)
+        n = 0
+        for data_item in t:
             if args.cuda:
-                x, y, target = map_structure(
+                data_item = map_structure(
                     lambda t: t.to('cuda', non_blocking=True),
-                    (x, y, target))
-            input = encoder(x)
+                    data_item)
+            x, y, approx_output = data_item
+            batch_size = len(y)
+            n += batch_size
+            input = embedder(x)
             prediction = model(input)
-            loss = criterion(prediction, target)
-            total_loss += len(x) * loss.item()
-
+            loss = criterion(prediction, approx_output)
+            total_loss += loss.item() * batch_size
             output = dataset.get_output(prediction)
-            approx_loss = approx_criterion(
-                decoder.weight, decoder.bias,
-                output, y)
-            total_approx_loss += len(y) * approx_loss
+            approx_loss = approx_criterion_fn(output, y)
+            total_approx_loss += approx_loss.item() * batch_size
+            postfix = 'ppl={:.3f}'.format(
+                math.exp(total_approx_loss / n))
+            if args.eval_approxed_loss:
+                approxed_loss = approx_criterion_fn(dataset.get_output(approx_output), y)
+                total_approxed_loss += approxed_loss * batch_size
+                postfix = postfix + ' approxed_ppl={:.3f}'.format(
+                    math.exp(total_approxed_loss / n))
+            t.set_postfix_str(postfix)
 
     loss = total_loss / len(dataset)
     approx_loss = total_approx_loss / len(dataset)
@@ -311,18 +330,20 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
     total_loss = 0.
     interval_loss = 0.
     t = tqdm(data_loader, desc='epoch {:3d}'.format(epoch), dynamic_ncols=True)
-    for i_batch, (x, y, target) in enumerate(t):
+    for i_batch, data_item in enumerate(t):
         global_step += 1
         if args.cuda:
-            x, y, target = map_structure(
+            data_item = map_structure(
                 lambda t: t.to('cuda', non_blocking=True),
-                (x, y, target))
+                data_item)
+        x, y, approx_output = data_item
+        batch_size = len(y)
         optimizer.zero_grad()
-        input = encoder(x)
+        input = embedder(x)
         prediction = model(input)
-        loss = criterion(prediction, target)
+        loss = criterion(prediction, approx_output)
         writer.add_scalar('{}/loss'.format(prefix), loss.item(), global_step)
-        total_loss += len(y) * loss.item()
+        total_loss += loss.item() * batch_size
         interval_loss += loss.item()
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(params, args.clip)

@@ -72,6 +72,10 @@ def get_embedder(model, is_GPT2):
     return model.word_embedder if is_GPT2 else model.encoder
 
 
+def get_embedding_size(embedder, is_GPT2):
+    return (embedder.embedding if is_GPT2 else embedder.weight).size(1)
+
+
 def get_output_layer(model, is_GPT2):
     return model.decoder.output_layer if is_GPT2 else model.decoder
 

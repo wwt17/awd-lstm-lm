@@ -103,46 +103,40 @@ class FixedLengthContextDataset(Dataset):
 
 
 class HiddenStateDataset(Dataset):
-    def __init__(self, seq, hidden_state_h5py, context_size, pad_id, predict_all_layers, predict_c):
+    def __init__(self, seq, hidden_state_h5py, context_size, is_GPT2=False, predict_all_layers=False, predict_c=False):
         self.context_size = context_size
-        self.seq = torch.cat([torch.full((context_size - 1,), pad_id, dtype=torch.long), seq])
+        self.seq = seq
         self.hidden_state_h5py = h5py.File(hidden_state_h5py, 'r')
         self.output = self.hidden_state_h5py['output']
-        grp_hidden = self.hidden_state_h5py['hidden']
-        self.hidden = []
-        for l in range(len(grp_hidden)):
-            grp_layer = grp_hidden[str(l)]
-            self.hidden.append((grp_layer['h'], grp_layer['c']))
-        self.states = (self.output, self.hidden)
-        self.predict_all_layers = predict_all_layers
-        self.predict_c = predict_c
+        self.is_GPT2 = is_GPT2
+        if is_GPT2:
+            self.states = [self.output]
+        else:
+            grp_hidden = self.hidden_state_h5py['hidden']
+            self.hidden = []
+            for l in range(len(grp_hidden)):
+                grp_layer = grp_hidden[str(l)]
+                self.hidden.append((grp_layer['h'], grp_layer['c']))
+            self.states = []
+            for h, c in (self.hidden if predict_all_layers else self.hidden[-1:]):
+                if predict_c:
+                    self.states.append(c)
+                self.states.append(h)
 
     def __len__(self):
-        return self.output.shape[0] - 1
+        return len(self.seq) - self.context_size
 
     def __getitem__(self, i):
         x = self.seq[i : self.context_size + i]
         y = self.seq[self.context_size + i]
-        target = self.hidden if self.predict_all_layers else self.hidden[-1:]
-        if not self.predict_c:
-            target = [(h,) for h, c in target]
-        target = torch.cat([torch.cat([
-            torch.tensor(b[i]) for b in a], -1) for a in target], -1).squeeze(0).squeeze(0)
-        return x, y, target
+        out = torch.cat([torch.tensor(h[i]) for h in self.states], -1)
+        if not self.is_GPT2:
+            out = out.squeeze(0)
+        return x, y, out
 
     @property
     def target_size(self):
-        s = self.hidden if self.predict_all_layers else self.hidden[-1:]
-        if self.predict_c:
-            s = [h.shape[-1] + c.shape[-1] for h, c in s]
-        else:
-            s = [h.shape[-1] for h, c in s]
-        return sum(s)
+        return sum(h.shape[-1] for h in self.states)
 
     def get_output(self, hidden_state):
-        h, c = self.hidden[-1]
-        h, c = map_structure(lambda x: x.shape[-1], (h, c))
-        if self.predict_c:
-            return hidden_state[:, -h-c : -c]
-        else:
-            return hidden_state[:, -h:]
+        return hidden_state[:, -self.states[-1].shape[-1]:]
