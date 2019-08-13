@@ -84,6 +84,8 @@ parser.add_argument('--num_workers', type=int, default=12,
 ## Procedure
 parser.add_argument('--log-interval', type=int, default=200, metavar='N',
                     help='report interval')
+parser.add_argument('--eval-interval', type=int, default=10000,
+                    help='eval interval')
 parser.add_argument('--epochs', type=int, default=8000,
                     help='upper epoch limit')
 ## Batch size
@@ -357,6 +359,12 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
                 optimizer.param_groups[0]['lr'],
                 mean_loss))
             interval_loss = 0.
+
+        if global_step % args.eval_interval == 0:
+            valid_loss = evaluate()
+            update_valid_loss(valid_loss)
+            model.train()
+
     loss = total_loss / len(dataset)
     print('train loss={:.6f}'.format(
         loss))
@@ -366,25 +374,28 @@ valid_loss = evaluate()
 best_valid_loss = valid_loss
 valid_losses = [valid_loss]
 
+def update_valid_loss(valid_loss):
+    global valid_losses, best_valid_loss
+    valid_losses.append(valid_loss)
+    if valid_loss < best_valid_loss:
+        print('Saving model (new best validation)')
+        model_save(os.path.join(args.ckpt, 'step{}.pt'.format(global_step)))
+        model_save(os.path.join(args.ckpt, 'best.pt'))
+        best_valid_loss = valid_loss
+
 # At any point you can hit Ctrl + C to break out of training early.
 try:
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
         train()
         valid_loss = evaluate()
-
-        if valid_loss < best_valid_loss:
-            model_save(os.path.join(args.ckpt, 'best.pt'))
-            print('Saving model (new best validation)')
-            best_valid_loss = valid_loss
+        update_valid_loss(valid_loss)
 
         if epoch in args.when:
             print('Saving model before learning rate decreased')
             model_save(os.path.join(args.ckpt, 'epoch{}.pt'.format(epoch)))
             print('Dividing learning rate by 10')
             optimizer.param_groups[0]['lr'] /= 10.
-
-        valid_losses.append(valid_loss)
 
 except KeyboardInterrupt:
     print('Exiting from training early')
