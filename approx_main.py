@@ -387,10 +387,11 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
 
 # Loop over epochs.
 valid_loss = evaluate()
-best_valid_loss = valid_loss
+best_valid_loss, _ = valid_loss
 
 def update_valid_loss(valid_loss):
-    global best_valid_loss, not_updated
+    valid_loss, valid_approx_loss = valid_loss
+    global best_valid_loss
     if valid_loss < best_valid_loss:
         print('Saving model (new best validation)')
         model_save(os.path.join(args.ckpt, 'step{}.pt'.format(global_step)))
