@@ -271,6 +271,7 @@ try:
 except FileNotFoundError:
     pass
 
+params = list(model.parameters()) + list(criterion.parameters())
 
 ###############################################################################
 # Training code
