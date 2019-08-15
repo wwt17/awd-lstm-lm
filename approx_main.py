@@ -102,8 +102,11 @@ parser.add_argument('--lr', type=float, default=1e-4,
                     help='initial learning rate')
 parser.add_argument('--clip', type=float, default=100.,
                     help='gradient clipping')
-parser.add_argument('--when', nargs="+", type=int, default=[-1],
-                    help='When (which epochs) to divide the learning rate by 10 - accepts multiple')
+parser.add_argument('--reduce_lr_factor', type=float, default=.1)
+parser.add_argument('--reduce_lr_patience', type=int, default=20)
+parser.add_argument('--reduce_lr_threshold', type=float, default=1e-4)
+parser.add_argument('--reduce_lr_cooldown', type=int, default=20)
+parser.add_argument('--reduce_lr_min_lr', type=float, default=0.)
 parser.add_argument('--wdecay', type=float, default=0.,
                     help='weight decay applied to all weights')
 parser.add_argument('--input_dropout', type=float, default=0.,
@@ -238,15 +241,27 @@ if args.optimizer == 'sgd':
     optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
 elif args.optimizer == 'adam':
     optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
+lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer,
+    factor=args.reduce_lr_factor,
+    patience=args.reduce_lr_patience,
+    verbose=True,
+    threshold=args.reduce_lr_threshold,
+    cooldown=args.reduce_lr_cooldown,
+    min_lr=args.reduce_lr_min_lr,
+)
 
 global_step = 0
 
 def model_load(path):
-    global model, criterion, optimizer, global_step
-    model, criterion, optimizer, global_step = torch.load(model_path)
+    global model, criterion, optimizer, global_step, lr_scheduler
+    loaded = torch.load(model_path)
+    model, criterion, optimizer, global_step = loaded[:4]
+    if len(loaded) > 4:
+        lr_scheduler = loaded[4]
 
 def model_save(path):
-    torch.save((model, criterion, optimizer, global_step), path)
+    torch.save((model, criterion, optimizer, global_step, lr_scheduler), path)
 
 os.makedirs(args.ckpt, exist_ok=True)
 model_path = os.path.join(args.ckpt, 'best.pt')
@@ -372,16 +387,15 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
 # Loop over epochs.
 valid_loss = evaluate()
 best_valid_loss = valid_loss
-valid_losses = [valid_loss]
 
 def update_valid_loss(valid_loss):
-    global valid_losses, best_valid_loss
-    valid_losses.append(valid_loss)
+    global best_valid_loss, not_updated
     if valid_loss < best_valid_loss:
         print('Saving model (new best validation)')
         model_save(os.path.join(args.ckpt, 'step{}.pt'.format(global_step)))
         model_save(os.path.join(args.ckpt, 'best.pt'))
         best_valid_loss = valid_loss
+    lr_scheduler.step(valid_loss)
 
 # At any point you can hit Ctrl + C to break out of training early.
 try:
@@ -390,12 +404,6 @@ try:
         train()
         valid_loss = evaluate()
         update_valid_loss(valid_loss)
-
-        if epoch in args.when:
-            print('Saving model before learning rate decreased')
-            model_save(os.path.join(args.ckpt, 'epoch{}.pt'.format(epoch)))
-            print('Dividing learning rate by 10')
-            optimizer.param_groups[0]['lr'] /= 10.
 
 except KeyboardInterrupt:
     print('Exiting from training early')
