@@ -37,6 +37,7 @@ parser.add_argument('--ckpt', type=str,  default='',
                     help='path of model to save and resume')
 # target
 parser.add_argument('--approx_distribution', action='store_true')
+parser.add_argument('--approx_dist_temp', type=float, default=1.)
 # Hidden state
 parser.add_argument('--predict_all_layers', action='store_true')
 parser.add_argument('--predict_c', action='store_true')
@@ -154,6 +155,7 @@ from splitcross import SplitCrossEntropyLoss
 approx_criterion = None
 
 vocab_size = corpus.vocab.size
+print('vocab_size = {}'.format(vocab_size))
 ###
 print('Loading approximated model ...')
 with open(args.approx_model, 'rb') as f:
@@ -191,7 +193,7 @@ output_layer = get_output_layer(approx_model, is_GPT2)
 
 embedding_size = get_embedding_size(embedder, is_GPT2)
 hidden_size = args.hidden_size
-output_size = datasets['train'].target_size
+output_size = datasets['train'].target_size if not args.approx_distribution else vocab_size
 # output_size = output_layer.weight.size(1)
 print('embedding_size={} hidden_size={} output_size={}'.format(
     embedding_size, hidden_size, output_size))
@@ -223,6 +225,8 @@ elif args.model_type == 'transformer':
         residual_dropout=args.hidden_dropout,
         multihead_dropout=args.hidden_dropout)
 criterion = nn.MSELoss()
+if args.approx_distribution:
+    ce_criterion = torch.nn.CrossEntropyLoss()
 if args.cuda:
     model.cuda()
     criterion.cuda()
@@ -280,6 +284,21 @@ params = list(model.parameters()) + list(criterion.parameters())
 writer = SummaryWriter(os.path.join(args.ckpt, 'log'))
 
 
+def get_prediction_and_loss(x, y, approx_output, get_output):
+    input = embedder(x)
+    prediction = model(input)
+    if args.approx_distribution:
+        logits_q = prediction
+        log_q = (logits_q / args.approx_dist_temp).log_softmax(-1)
+        logits_p = output_layer(get_output(approx_output)).detach()
+        p = (logits_p / args.approx_dist_temp).softmax(-1)
+        stuff = (logits_q, log_q, logits_p, p)
+        loss = -(p * log_q).sum(-1).mean()
+    else:
+        loss = criterion(prediction, approx_output)
+        stuff = None
+    return prediction, loss, stuff
+
 def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix='valid'):
     global global_step
     # Turn on evaluation mode which disables dropout.
@@ -306,20 +325,25 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
             x, y, approx_output = data_item
             batch_size = len(y)
             n += batch_size
-            input = embedder(x)
-            prediction = model(input)
-            loss = criterion(prediction, approx_output)
+            prediction, loss, stuff = get_prediction_and_loss(x, y, approx_output, dataset.get_output)
             total_loss += loss.item() * batch_size
-            output = dataset.get_output(prediction)
-            approx_loss = approx_criterion_fn(output, y)
+            if args.approx_distribution:
+                logits_q, log_q, logits_p, p = stuff
+                approx_loss = ce_criterion(logits_q, y)
+            else:
+                output = dataset.get_output(prediction)
+                approx_loss = approx_criterion_fn(output, y)
             total_approx_loss += approx_loss.item() * batch_size
             postfix = 'ppl={:.3f}'.format(
                 math.exp(total_approx_loss / n))
             if args.eval_approxed_loss:
                 approxed_loss = approx_criterion_fn(dataset.get_output(approx_output), y)
                 total_approxed_loss += approxed_loss * batch_size
-                postfix = postfix + ' approxed_ppl={:.3f}'.format(
+                postfix += ' approxed_ppl={:.3f}'.format(
                     math.exp(total_approxed_loss / n))
+            if args.approx_distribution:
+                max_p, _ = p.max(-1)
+                postfix += ' max_p={:.3f}'.format(max_p.mean().item())
             t.set_postfix_str(postfix)
 
     loss = total_loss / len(dataset)
@@ -357,9 +381,7 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
         x, y, approx_output = data_item
         batch_size = len(y)
         optimizer.zero_grad()
-        input = embedder(x)
-        prediction = model(input)
-        loss = criterion(prediction, approx_output)
+        prediction, loss, stuff = get_prediction_and_loss(x, y, approx_output, dataset.get_output)
         writer.add_scalar('{}/loss'.format(prefix), loss.item(), global_step)
         total_loss += loss.item() * batch_size
         interval_loss += loss.item()
