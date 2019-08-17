@@ -103,8 +103,14 @@ class FixedLengthContextDataset(Dataset):
 
 
 class HiddenStateDataset(Dataset):
-    def __init__(self, seq, hidden_state_h5py, context_size, is_GPT2=False, predict_all_layers=False, predict_c=False):
+    def __init__(self, seq, hidden_state_h5py, context_size, last_n=None, is_GPT2=False, predict_all_layers=False, predict_c=False):
         self.context_size = context_size
+        if last_n is None:
+            self.no_last_n = True
+            self.last_n = 1
+        else:
+            self.no_last_n = False
+            self.last_n = last_n
         self.seq = seq
         self.hidden_state_h5py = h5py.File(hidden_state_h5py, 'r')
         self.output = self.hidden_state_h5py['output']
@@ -124,13 +130,17 @@ class HiddenStateDataset(Dataset):
                 self.states.append(h)
 
     def __len__(self):
-        return len(self.seq) - self.context_size
+        return len(self.seq) - self.context_size - (self.last_n - 1)
 
     def __getitem__(self, i):
+        i += self.last_n - 1
         x = self.seq[i : self.context_size + i]
-        y = self.seq[self.context_size + i]
-        out = torch.cat([torch.tensor(h[i]) for h in self.states], -1)
+        y = self.seq[self.context_size + i - self.last_n + 1 : self.context_size + i + 1]
+        out = torch.cat([torch.tensor(h[i - self.last_n + 1 : i + 1]) for h in self.states], -1)
         if not self.is_GPT2:
+            out = out.squeeze(-2)
+        if self.no_last_n:
+            y = y.squeeze(0)
             out = out.squeeze(0)
         return x, y, out
 
@@ -139,4 +149,5 @@ class HiddenStateDataset(Dataset):
         return sum(h.shape[-1] for h in self.states)
 
     def get_output(self, hidden_state):
-        return hidden_state[:, -self.states[-1].shape[-1]:]
+        l = self.states[-1].shape[-1]
+        return hidden_state.narrow(-1, -l, l)

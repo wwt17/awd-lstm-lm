@@ -48,6 +48,7 @@ parser.add_argument('--model_type', type=str, choices=['mlp', 'cnn', 'lstm', 'tr
 ## Shared
 parser.add_argument('--context_size', type=int, required=True,
                     help='size of used context')
+parser.add_argument('--last_n', type=int, default=None)
 ## Shared by MLP, LSTM and Transformer
 parser.add_argument('--hidden_size', type=int,
                     help='size of hidden state')
@@ -177,6 +178,7 @@ datasets = {
         getattr(corpus, stage),
         os.path.join(args.output_hidden_path, '{}.h5py'.format(stage)),
         context_size,
+        last_n=args.last_n if stage == 'train' else None,
         is_GPT2=is_GPT2,
         predict_all_layers=args.predict_all_layers,
         predict_c=args.predict_c,
@@ -215,6 +217,7 @@ elif args.model_type == 'lstm':
     model = approx_models.LSTM_Approximator(
         context_size, embedding_size, hidden_size, args.n_layers,
         None if args.no_transform_output else output_size,
+        last_n=args.last_n,
         input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
         output_dropout=args.output_dropout)
 elif args.model_type == 'transformer':
@@ -303,6 +306,8 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
     global global_step
     # Turn on evaluation mode which disables dropout.
     model.eval()
+    if args.last_n is not None:
+        model.last_n = None
     data_loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -354,6 +359,9 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
     writer.add_scalar('{}/loss'.format(prefix), loss, global_step)
     writer.add_scalar('{}/approx_loss'.format(prefix), approx_loss, global_step)
     writer.add_scalar('{}/ppl'.format(prefix), ppl, global_step)
+
+    if args.last_n is not None:
+        model.last_n = args.last_n
     return loss, approx_loss
 
 

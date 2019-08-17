@@ -131,9 +131,11 @@ class CNN_Approximator(nn.Module):
 class LSTM_Approximator(nn.Module):
     def __init__(
             self, sequence_length, input_size, hidden_size, n_layers,
-            output_size=None, input_dropout=0., hidden_dropout=0., output_dropout=0.):
+            output_size=None, last_n=None,
+            input_dropout=0., hidden_dropout=0., output_dropout=0.):
         super(LSTM_Approximator, self).__init__()
         self.sequence_length = sequence_length
+        self.last_n = last_n
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.n_layers = n_layers
@@ -147,7 +149,10 @@ class LSTM_Approximator(nn.Module):
         if self.input_dropout is not None:
             input = self.input_dropout(input)
         output, (h, c) = self.lstm(input)
-        output = output[:, -1]
+        if self.last_n is None:
+            output = output[:, -1]
+        else:
+            output = output[:, -self.last_n :]
         if self.output_dropout is not None:
             output = self.output_dropout(output)
         if self.output_layer is not None:
@@ -162,6 +167,7 @@ class Transformer_Approximator(nn.Module):
             embedding_dropout=0.1, residual_dropout=0.1, multihead_dropout=0.1):
         super(Transformer_Approximator, self).__init__()
         self.sequence_length = sequence_length
+        self.last_n = last_n
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.n_blocks = n_blocks
