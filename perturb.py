@@ -172,8 +172,8 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
                 losses, entropies = get_perplexities_entropies(output_layer(output[-1]), targets[-1])
                 all_losses += losses.tolist()
                 all_entropies += entropies.tolist()
-                total_loss += losses.sum()
-                total_entropy += entropies.sum()
+                total_loss += losses.sum().item()
+                total_entropy += entropies.sum().item()
                 loss = losses.mean()
                 entropy = entropies.mean()
             else:
