@@ -19,63 +19,58 @@ def random_drop_many(data, boundary, args):
     """
     Drop (100*args.n)% of tokens from each substring, randomly sampled.
     """
+    data = data.cpu().numpy()
     examples = []
     num_drop = math.floor((args.seq_len-boundary) * args.n)
-    for example in range(data.data.shape[0]):
+    for example in data:
         drop_idxs = np.random.choice(args.seq_len-boundary, size=num_drop, replace=False)
-        new_ex = np.delete(data.data[example].cpu().numpy(), drop_idxs).tolist()
-        examples.append(new_ex)
+        new_ex = np.delete(example, drop_idxs)
+        examples.append(torch.from_numpy(new_ex))
 
-    examples = [torch.cuda.LongTensor((ex)) for ex in examples]
-    data = torch.stack(examples).cuda()
-    return data.transpose(1,0)
+    return torch.stack(examples, 1).cuda()
 
 def drop_pos(data, pdata, boundary, args, pos_dict):
     """
     Drop all tokens, from the substring, with a part-of-speech tag that belongs to the list defined by args.pos.
     """
+    data = data.cpu().numpy()
+    pdata = pdata.cpu().numpy()
     examples = []
-    for example in range(data.data.shape[0]):
-        pcurr = pdata.data[example][:-boundary].cpu().numpy()
-        drop_idxs = np.array([idx for idx in range(pcurr.shape[0]) if pos_dict.idx2word[pcurr[idx]] in args.pos], dtype=np.int32)
-        new_ex = np.delete(data.data[example].cpu().numpy(), drop_idxs).tolist()
-        examples.append(new_ex)
+    for example, pcurr in zip(data, pdata[:, :-boundary]):
+        drop_idxs = np.array([idx for idx in pcurr if pos_dict.id_to_token_map_py[idx] in args.pos], dtype=np.int32)
+        new_ex = np.delete(example, drop_idxs)
+        examples.append(torch.from_numpy(new_ex))
 
-    examples = [torch.cuda.LongTensor((ex)) for ex in examples]
-    data = torch.stack(examples).cuda()
-    return data.transpose(1,0)
+    return torch.stack(examples, 1).cuda()
 
 def keep_pos(data, pdata, boundary, args, pos_dict):
     """
     Drop all tokens, from the substring, with a part-of-speech tag that does NOT belong to the list defined by args.pos.
     """
+    data = data.cpu().numpy()
+    pdata = pdata.cpu().numpy()
     examples = []
-    for example in range(data.data.shape[0]):
-        pcurr = pdata.data[example][:-boundary].cpu().numpy()
-        idxs = set(list(range(args.seq_len-boundary)))
-        keep_idxs = set([idx for idx in range(pcurr.shape[0]) if pos_dict.idx2word[pcurr[idx]] in args.pos])
-        drop_idxs = np.array(sorted(list(idxs - keep_idxs)), dtype=np.int32)
-        new_ex = np.delete(data.data[example].cpu().numpy(), drop_idxs).tolist()
-        examples.append(new_ex)
+    for example, pcurr in zip(data, pdata[:, :-boundary]):
+        drop_idxs = np.array([idx for idx in pcurr if pos_dict.id_to_token_map_py[idx] not in args.pos], dtype=np.int32)
+        new_ex = np.delete(example, drop_idxs)
+        examples.append(torch.from_numpy(new_ex))
 
-    examples = [torch.cuda.LongTensor((ex)) for ex in examples]
-    data = torch.stack(examples).cuda()
-    return data.transpose(1,0)
+    return torch.stack(examples, 1).cuda()
+
+def _shuffle(data, boundary, edge):
+    data = data.cpu().numpy()
+    examples = []
+    for new_ex in data:
+        np.random.shuffle(new_ex[edge:-boundary])
+        examples.append(torch.from_numpy(new_ex))
+
+    return torch.stack(examples, 1).cuda()
 
 def shuffle(data, boundary, args):
     """
     Shuffle all tokens in the substring.
     """
-    examples = []
-    for example in range(data.data.shape[0]):
-        new_ex = data.data[example].cpu().numpy()
-        np.random.shuffle(new_ex[:-boundary])
-        new_ex = new_ex.tolist()
-        examples.append(new_ex)
-
-    examples = [torch.cuda.LongTensor((ex)) for ex in examples]
-    data = torch.stack(examples).cuda()
-    return data.transpose(1,0)
+    return _shuffle(data, boundary, 0)
 
 def shuffle_within_spans(data, boundary, args):
     """
@@ -83,32 +78,17 @@ def shuffle_within_spans(data, boundary, args):
     Note here that the substring is always the first (args.seq_len - boundary) tokens.
     So the tokens shuffled are [args.seq_len - boundary - args.span, args.seq_len - boundary)
     """
-    examples = []
-    for example in range(data.data.shape[0]):
-        new_ex = data.data[example].cpu().numpy()
-        edge = -boundary-args.span
-        np.random.shuffle(new_ex[edge:-boundary])
-        new_ex = new_ex.tolist()
-        examples.append(new_ex)
+    return _shuffle(data, boundary, -boundary-args.span)
 
-    examples = [torch.cuda.LongTensor(ex) for ex in examples]
-    data = torch.stack(examples).cuda()
-    return data.transpose(1,0)
+def _reverse(data, boundary, edge):
+    data[:, edge:-boundary] = torch.flip(data[:, edge:-boundary], [1])
+    return data.transpose(1, 0)
 
 def reverse(data, boundary, args):
     """
     Reverse the substring.
     """
-    examples = []
-    for example in range(data.data.shape[0]):
-        new_ex = data.data[example].cpu().numpy()
-        new_ex[:-boundary] = new_ex[:-boundary][::-1]
-        new_ex = new_ex.tolist()
-        examples.append(new_ex)
-
-    examples = [torch.cuda.LongTensor((ex)) for ex in examples]
-    data = torch.stack(examples).cuda()
-    return data.transpose(1,0)
+    return _reverse(data, boundary, 0)
 
 def reverse_within_spans(data, boundary, args):
     """
@@ -116,17 +96,7 @@ def reverse_within_spans(data, boundary, args):
     Note here that the substring is always the first (args.seq_len - boundary) tokens.
     So the tokens reversed are [args.seq_len - boundary - args.span, args.seq_len - boundary)
     """
-    examples = []
-    for example in range(data.data.shape[0]):
-        new_ex = data.data[example].cpu().numpy()
-        edge = -boundary-args.span
-        new_ex[edge:-boundary] = new_ex[edge:-boundary][::-1]
-        new_ex = new_ex.tolist()
-        examples.append(new_ex)
-
-    examples = [torch.cuda.LongTensor(ex) for ex in examples]
-    data = torch.stack(examples).cuda()
-    return data.transpose(1,0)
+    return _reverse(data, boundary, -boundary-args.span)
 
 def replace_target(data, ptargets, args, targets, pos2vocab, corpus, pos_dict):
     """
@@ -136,23 +106,22 @@ def replace_target(data, ptargets, args, targets, pos2vocab, corpus, pos_dict):
     This is to facilitate analysis for whether the model copies from nearby context vs. from long-range context.
     """
     examples = []
-    for example in range(data.data.shape[0]):
-        new_ex1 = data.data[example].tolist()
-        tag = pos_dict.idx2word[ptargets[example]]
-        token_idx_in_list = pos2vocab[tag].index(targets[example])
+    for example, ptarget, target in zip(data, ptargets, targets):
+        new_ex1 = example.tolist()
+        tag = pos_dict.id_to_token_map_py[ptarget]
+        vocab = pos2vocab[tag]
+        token_idx_in_list = vocab.index(target)
         # This step is taken to remain comparable with replace_target_with_nearby_token.
         # Words that are not replaced in the other function are also not replaced in this case.
         # Eg: <eos> in Wikitext-2 is not replaced in either function.
-        if token_idx_in_list == 0 and len(pos2vocab[tag]) == 1:
-            replace_idx = pos2vocab[tag][token_idx_in_list]
+        if token_idx_in_list == 0 and len(vocab) == 1:
+            replace_idx = vocab[token_idx_in_list]
         else:
-            replace_idx = corpus.dictionary.word2idx['<unk>']
-        new_ex = [i if i != targets[example] or k < (args.seq_len - args.drop_or_replace_target_window) else replace_idx for k, i in enumerate(new_ex1)]
-        examples.append(new_ex)
+            replace_idx = corpus.vocab.unk_token_id
+        new_ex = [i if i != target or k < (args.seq_len - args.drop_or_replace_target_window) else replace_idx for k, i in enumerate(new_ex1)]
+        examples.append(torch.cuda.LongTensor(new_ex))
 
-    examples = [torch.cuda.LongTensor(ex) for ex in examples]
-    data = torch.stack(examples).cuda()
-    return data.transpose(1,0)
+    return torch.stack(examples, 1).cuda()
 
 def replace_target_with_nearby_token(data, ptargets, args, targets, pos2vocab, corpus, pos_dict):
     """
@@ -162,31 +131,30 @@ def replace_target_with_nearby_token(data, ptargets, args, targets, pos2vocab, c
     This is to facilitate analysis for whether the model copies from nearby context vs. from long-range context.
     """
     examples = []
-    for example in range(data.data.shape[0]):
-        new_ex = data.data[example].tolist()
-        tag = pos_dict.idx2word[ptargets[example]]
-        token_idx_in_list = pos2vocab[tag].index(targets[example])
+    for example, ptarget, target in zip(data, ptargets, targets):
+        new_ex = example.tolist()
+        tag = pos_dict.id_to_token_map_py[ptarget]
+        vocab = pos2vocab[tag]
+        token_idx_in_list = vocab.index(target)
         if token_idx_in_list == 0:
-            if len(pos2vocab[tag]) == 1:
-                replace_idx = pos2vocab[tag][token_idx_in_list]
+            if len(vocab) == 1:
+                replace_idx = vocab[token_idx_in_list]
             else:
-                replace_idx = pos2vocab[tag][token_idx_in_list+1]
-        elif token_idx_in_list == len(pos2vocab[tag])-1:
-            replace_idx = pos2vocab[tag][token_idx_in_list-1]
+                replace_idx = vocab[token_idx_in_list+1]
+        elif token_idx_in_list == len(vocab)-1:
+            replace_idx = vocab[token_idx_in_list-1]
         else:
             # Find the token with closest frequency
-            leftdiff = abs(corpus.dictionary.counter[pos2vocab[tag][token_idx_in_list]] - corpus.dictionary.counter[pos2vocab[tag][token_idx_in_list-1]])
-            rightdiff = abs(corpus.dictionary.counter[pos2vocab[tag][token_idx_in_list]] - corpus.dictionary.counter[pos2vocab[tag][token_idx_in_list+1]])
+            leftdiff = abs(corpus.vocab.counter[vocab[token_idx_in_list]] - corpus.vocab.counter[vocab[token_idx_in_list-1]])
+            rightdiff = abs(corpus.vocab.counter[vocab[token_idx_in_list]] - corpus.vocab.counter[vocab[token_idx_in_list+1]])
             if leftdiff <= rightdiff:
-                replace_idx = pos2vocab[tag][token_idx_in_list-1]
+                replace_idx = vocab[token_idx_in_list-1]
             else:
-                replace_idx = pos2vocab[tag][token_idx_in_list+1]
-        new_ex = [i if i != targets[example] or k < (args.seq_len - args.drop_or_replace_target_window) else replace_idx for k, i in enumerate(new_ex)]
-        examples.append(new_ex)
+                replace_idx = vocab[token_idx_in_list+1]
+        new_ex = [i if i != target or k < (args.seq_len - args.drop_or_replace_target_window) else replace_idx for k, i in enumerate(new_ex)]
+        examples.append(torch.cuda.LongTensor(new_ex))
 
-    examples = [torch.cuda.LongTensor(ex) for ex in examples]
-    data = torch.stack(examples).cuda()
-    return data.transpose(1,0)
+    return torch.stack(examples, 1).cuda()
 
 def drop_target(data, ptargets, args, targets, pos2vocab, corpus, pos_dict):
     """
@@ -196,23 +164,22 @@ def drop_target(data, ptargets, args, targets, pos2vocab, corpus, pos_dict):
     This is to facilitate analysis for whether the model copies from nearby context vs. from long-range context.
     """
     examples = []
-    for example in range(data.data.shape[0]):
-        new_ex = data.data[example].tolist()
-        tag = pos_dict.idx2word[ptargets[example]]
-        token_idx_in_list = pos2vocab[tag].index(targets[example])
+    for example, ptarget, target in zip(data, ptargets, targets):
+        new_ex = example.tolist()
+        tag = pos_dict.id_to_token_map_py[ptarget]
+        vocab = pos2vocab[tag]
+        token_idx_in_list = vocab.index(target)
         # This step is taken to remain comparable with replace_target_with_nearby_token.
         # Words that are not replaced in the other function are also not replaced in this case.
         # Eg: <eos> in Wikitext-2 is not replaced in either function.
-        if token_idx_in_list == 0 and len(pos2vocab[tag]) == 1:
+        if token_idx_in_list == 0 and len(vocab) == 1:
             drop_idxs = []
         else:
-            drop_idxs = [k for k, i in enumerate(new_ex) if i == targets[example] and k >= (args.seq_len - args.drop_or_replace_target_window)]
+            drop_idxs = [k for k, i in enumerate(new_ex) if i == target and k >= (args.seq_len - args.drop_or_replace_target_window)]
         new_ex = np.delete(np.array(new_ex), drop_idxs).tolist()
-        examples.append(new_ex)
+        examples.append(torch.cuda.LongTensor(new_ex))
 
-    examples = [torch.cuda.LongTensor(ex) for ex in examples]
-    data = torch.stack(examples).cuda()
-    return data.transpose(1,0)
+    return torch.stack(examples, 1).cuda()
 
 def replace_with_rand_seq(data, boundary, args, corpus):
     """
@@ -223,7 +190,7 @@ def replace_with_rand_seq(data, boundary, args, corpus):
         rep_idx = np.random.randint(corpus.train.shape[0]-args.seq_len)
         data.data[example][:-boundary] = corpus.train[rep_idx:rep_idx+args.seq_len-boundary]
 
-    return data.transpose(1,0)
+    return data.transpose(1, 0)
 
 def pick_perturbation(args, boundary):
     if args.func == 'random_drop_many':

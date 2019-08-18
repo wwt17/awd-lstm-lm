@@ -64,7 +64,7 @@ def prepare_corpus(data_name):
     return corpus
 
 
-def get_vocab_all_pos(pos_datafile, corpus_dict):
+def get_vocab_all_pos(pos_datafile, vocab):
     """
     Generate a map.
     Keys = POS tag
@@ -78,8 +78,8 @@ def get_vocab_all_pos(pos_datafile, corpus_dict):
                 w, p = word_pair.split('_')
                 if p not in pos_:
                     pos_[p] = {}
-                token_id = corpus_dict.word2idx[w]
-                pos_[p][token_id] = corpus_dict.counter[token_id]
+                token_id = vocab.token_to_id_map_py[w]
+                pos_[p][token_id] = vocab.counter[token_id]
 
     for tag in pos_:
         # sort dictionary by rank and throw away the frequencies

@@ -236,7 +236,7 @@ if args.func in ['replace_target', 'replace_target_with_nearby_token', 'drop_tar
     assert pos_corpus is not None, "No POS file is found"
     pos2vocab = get_vocab_all_pos(
         os.path.join(pos_datafile, '{}.txt'.format(args.stage)),
-        corpus.dictionary)
+        corpus.vocab)
     loop_range = [-1]
     prefix += '{}.'.format(args.drop_or_replace_target_window)
 else:
