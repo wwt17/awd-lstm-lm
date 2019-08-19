@@ -203,7 +203,7 @@ if not args.func:
         args)
     print_results('seq_len={}'.format(args.seq_len), loss, entropy)
     save_results(
-        'per_token_scores_{}_{}'.format(args.stage, args.seq_len),
+        'per_token_scores.{}.none.{}'.format(args.stage, args.seq_len),
         [args.seq_len, loss, entropy, all_losses, all_entropies],
     )
 
@@ -229,7 +229,7 @@ if args.func in ['drop_pos', 'keep_pos', 'drop_target']:
 loop_range = args.use_range
 
 # For logging per token scores
-prefix = '{}.per_tok_scores.'.format(args.func)
+prefix = 'per_token_scores.{}.{}'.format(args.stage, args.func)
 
 # pos2vocab is a map containing all words with the given POS tag in a list sorted by frequency
 if args.func in ['replace_target', 'replace_target_with_nearby_token', 'drop_target']:
@@ -238,7 +238,7 @@ if args.func in ['replace_target', 'replace_target_with_nearby_token', 'drop_tar
         os.path.join(pos_datafile, '{}.txt'.format(args.stage)),
         corpus.vocab)
     loop_range = [-1]
-    prefix += '{}.'.format(args.drop_or_replace_target_window)
+    prefix += '.{}'.format(args.drop_or_replace_target_window)
 else:
     pos2vocab = None
 
