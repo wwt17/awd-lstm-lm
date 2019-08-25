@@ -87,12 +87,12 @@ def get_criterion_fn(model, criterion, is_GPT2):
     return criterion_fn
 
 
-def get_perplexities_entropies(logits, target):
+def get_distribution_perplexities_entropies(logits, target):
     log_softmaxed = F.log_softmax(logits, -1)
     softmaxed = F.softmax(logits, -1)
     perplexities = -torch.gather(log_softmaxed, -1, target.unsqueeze(-1)).squeeze(-1)
     entropies = -(softmaxed * log_softmaxed).sum(-1)
-    return perplexities, entropies
+    return softmaxed, perplexities, entropies
 
 
 def convert_data_tuple(data_tuple):

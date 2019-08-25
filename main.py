@@ -17,7 +17,7 @@ import importlib
 import texar as tx
 
 from data import FixedLengthContextDataset
-from utils import batchify, get_batch, repackage_hidden, map_structure, get_splits, loss_repr, get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies, convert_data_tuple
+from utils import batchify, get_batch, repackage_hidden, map_structure, get_splits, loss_repr, get_model_fn, get_criterion_fn, get_output_layer, get_distribution_perplexities_entropies, convert_data_tuple
 from gpt2_decoder import GPT2Decoder
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
@@ -319,7 +319,7 @@ def evaluate(data_source, batch_size, prefix):
                 output, hidden = model(data, hidden)
                 hidden = repackage_hidden(hidden)
             if args.eval_entropy:
-                losses, entropies = get_perplexities_entropies(output_layer(output), targets)
+                _, losses, entropies = get_distribution_perplexities_entropies(output_layer(output), targets)
                 total_loss += losses.sum()
                 total_entropy += entropies.sum()
             else:

@@ -15,7 +15,7 @@ import data
 import model
 
 from data import FixedLengthContextDataset, get_vocab_all_pos
-from utils import map_structure, get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies, convert_data_tuple
+from utils import map_structure, get_model_fn, get_criterion_fn, get_output_layer, get_distribution_perplexities_entropies, convert_data_tuple
 from gpt2_decoder import GPT2Decoder
 # this is not a good practice, but making an exception in this case
 from perturbations import *
@@ -61,6 +61,7 @@ parser.add_argument('--use_range', nargs='+', type=lambda s: list(map(int, s)),
                     help='Use these values for the boundary loop, but first convert to ints. Sample usage is --use_range 5 20 100')
 parser.add_argument('--entropy', action='store_true',
                     help='Get entropy')
+parser.add_argument('--topk', type=int, default=10)
 parser.add_argument('--num_workers', type=int, default=12,
                     help='Number of workers to load dataset')
 args = parser.parse_args()
@@ -121,7 +122,7 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
 
     n = 0
     total_loss, total_entropy = 0., 0.
-    all_losses, all_entropies = [], []
+    all_losses, all_entropies, all_topk = [], [], []
 
     # Number of batches excludes the last seq_len tokens as start of context, since the target index would lie out of bounds.
     # Skip examples at the beginning to ensure the first target is the same for each experiment.
@@ -169,9 +170,12 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
             else:
                 output, _ = model(data, init_hidden)
             if args.entropy:
-                losses, entropies = get_perplexities_entropies(output_layer(output[-1]), targets[-1])
+                distribution, losses, entropies = get_distribution_perplexities_entropies(output_layer(output[-1]), targets[-1])
+                topk = distribution.topk(args.topk, dim=-1)
+                topk = map_structure(lambda t: t.cpu().numpy(), topk)
                 all_losses += losses.tolist()
                 all_entropies += entropies.tolist()
+                all_topk.extend(zip(*topk))
                 total_loss += losses.sum().item()
                 total_entropy += entropies.sum().item()
                 loss = losses.mean()
@@ -186,7 +190,7 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
         print('Last word: {}'.format(corpus.vocab.id_to_token_map_py[int(data[-1, -1])]))
         print('Total: {}'.format(n))
 
-    return total_loss / n, total_entropy / n, all_losses, all_entropies
+    return total_loss / n, total_entropy / n, all_losses, all_entropies, all_topk
 
 def print_results(prefix, loss, entropy):
     print('{}: loss: {}, ppl: {}, entropy: {}'.format(prefix, loss, math.exp(loss), entropy))
@@ -197,14 +201,14 @@ def save_results(file_name, items):
             pickle.dump(item, f)
 
 if not args.func:
-    loss, entropy, all_losses, all_entropies = evaluate(
+    loss, entropy, all_losses, all_entropies, all_topk = evaluate(
         data_, pos_data,
         lambda data, pdata, targets, ptargets, args: data,
         args)
     print_results('seq_len={}'.format(args.seq_len), loss, entropy)
     save_results(
         'per_token_scores.{}.none.{}'.format(args.stage, args.seq_len),
-        [args.seq_len, loss, entropy, all_losses, all_entropies],
+        [args.seq_len, loss, entropy, all_losses, all_entropies, all_topk],
     )
 
     sys.exit(0)
@@ -249,7 +253,7 @@ print(loop_range)
 for boundary in loop_range:
     log_msg, cfunc, res_label = pick_perturbation(args, boundary)
     print(log_msg)
-    loss, entropy, all_losses, all_entropies = evaluate(
+    loss, entropy, all_losses, all_entropies, all_topk = evaluate(
         data_, pos_data,
         lambda data, pdata, targets, ptargets, args: perturb_data(
             data.transpose(1, 0), pdata.transpose(1, 0) if pdata is not None else None,
@@ -259,6 +263,6 @@ for boundary in loop_range:
         args)
     print_results(res_label, loss, entropy)
     save_results(
-        prefix+str(boundary),
-        [res_label, loss, entropy, all_losses, all_entropies],
+        '{}.{}'.format(prefix, boundary),
+        [res_label, loss, entropy, all_losses, all_entropies, all_topk],
     )
