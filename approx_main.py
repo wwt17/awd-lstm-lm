@@ -126,7 +126,7 @@ required_args = {
     'mlp': ['hidden_size'],
     'cnn': ['n_layers', 'channels', 'kernel_size', 'variational', 'output_layer_type'],
     'lstm': ['hidden_size', 'n_layers'],
-    'transformer': ['hidden_size', 'n_blocks', 'n_heads', 'output_layer_type'],
+    'transformer': ['hidden_size', 'n_blocks', 'n_heads'],
 }[args.model_type]
 for a in required_args:
     assert getattr(args, a) is not None, 'must specify {}'.format(a)
@@ -217,13 +217,12 @@ elif args.model_type == 'lstm':
     model = approx_models.LSTM_Approximator(
         context_size, embedding_size, hidden_size, args.n_layers,
         None if args.no_transform_output else output_size,
-        last_n=args.last_n,
         input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
         output_dropout=args.output_dropout)
 elif args.model_type == 'transformer':
     model = approx_models.Transformer_Approximator(
         context_size, embedding_size, hidden_size, args.n_blocks, args.n_heads,
-        output_size, output_layer_type=args.output_layer_type,
+        None if args.no_transform_output else output_size,
         embedding_dropout=args.input_dropout,
         residual_dropout=args.hidden_dropout,
         multihead_dropout=args.hidden_dropout)
@@ -288,8 +287,13 @@ writer = SummaryWriter(os.path.join(args.ckpt, 'log'))
 
 
 def get_prediction_and_loss(x, y, approx_output, get_output):
-    input = embedder(x)
+    input = embedder(x).detach()
     prediction = model(input)
+    if isinstance(model, (approx_models.LSTM_Approximator, approx_models.Transformer_Approximator)):
+        if args.last_n is None or not model.training:
+            prediction = prediction[:, -1]
+        else:
+            prediction = prediction[:, -args.last_n:]
     if args.approx_distribution:
         logits_q = prediction
         log_q = (logits_q / args.approx_dist_temp).log_softmax(-1)
