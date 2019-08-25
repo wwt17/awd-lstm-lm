@@ -128,14 +128,19 @@ class HiddenStateDataset(Dataset):
                 if predict_c:
                     self.states.append(c)
                 self.states.append(h)
+        self.n = len(self.states[0])
+        assert all(len(s) == self.n for s in self.states)
+        self.start = len(self.seq) - self.n
+        assert self.context_size <= self.start + self.last_n - 1
 
     def __len__(self):
-        return len(self.seq) - self.context_size - (self.last_n - 1)
+        return self.n - (self.last_n - 1)
 
     def __getitem__(self, i):
         i += self.last_n - 1
-        x = self.seq[i : self.context_size + i]
-        y = self.seq[self.context_size + i - self.last_n + 1 : self.context_size + i + 1]
+        i_ = i + self.start
+        x = self.seq[i_ - self.context_size : i_]
+        y = self.seq[i_ - self.last_n + 1 : i_ + 1]
         out = torch.cat([torch.tensor(h[i - self.last_n + 1 : i + 1]) for h in self.states], -1)
         if not self.is_GPT2:
             out = out.squeeze(-2)
