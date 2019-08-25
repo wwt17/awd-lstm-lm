@@ -36,6 +36,17 @@ def get_batch(source, i, seq_len):
     return data, target
 
 
+def get_config_model(config_model, vocab_size):
+    import importlib
+    config_model = importlib.import_module(config_model)
+    config_model = {
+        k: v for k, v in config_model.__dict__.items()
+        if not k.startswith('__')}
+    config_model.pop('dim')
+    config_model['vocab_size'] = vocab_size
+    return config_model
+
+
 def get_splits(ntokens):
     if ntokens > 500000:
         # One Billion
@@ -57,14 +68,19 @@ def loss_repr(loss):
 
 
 def get_model_fn(model):
-    def model_fn(data):
+    def model_fn(data, batch_first=False):
+        if not batch_first:
+            data = data.transpose(0, 1)
         output_layer = model.decoder._output_layer
         model.decoder._output_layer = tx.core.layers.Identity()
         output = model(
             decoding_strategy='train_greedy',
-            inputs=data.transpose(0, 1))
+            inputs=data)
         model.decoder._output_layer = output_layer
-        return output.raw_output.transpose(0, 1)
+        out = output.raw_output
+        if not batch_first:
+            out = out.transpose(0, 1)
+        return out
     return model_fn
 
 

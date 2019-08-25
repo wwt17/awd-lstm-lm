@@ -15,7 +15,7 @@ from data import HiddenStateDataset
 import model
 import approx_models
 
-from utils import map_structure, get_splits, get_embedder, get_embedding_size, get_output_layer, get_model_fn, get_criterion_fn
+from utils import map_structure, get_config_model, get_splits, get_embedder, get_embedding_size, get_output_layer, get_model_fn, get_criterion_fn
 from gpt2_decoder import GPT2Decoder
 
 def arg_to_list(t):
@@ -71,10 +71,8 @@ parser.add_argument('--output_layer_type', type=str, choices=['fc'], default='fc
 ## LSTM
 parser.add_argument('--no_transform_output', action='store_true')
 ## Transformer
-parser.add_argument('--n_blocks', type=int,
-                    help='Number of blocks in Transformer')
-parser.add_argument('--n_heads', type=int,
-                    help='Number of heads in Transformer')
+parser.add_argument('--config_model', type=str, default='config_GPT2_117M',
+                    help='The model configuration file to configure the model.')
 # Training/evaluation/test
 ## Meta
 parser.add_argument('--seed', type=int, default=0,
@@ -126,7 +124,7 @@ required_args = {
     'mlp': ['hidden_size'],
     'cnn': ['n_layers', 'channels', 'kernel_size', 'variational', 'output_layer_type'],
     'lstm': ['hidden_size', 'n_layers'],
-    'transformer': ['hidden_size', 'n_blocks', 'n_heads'],
+    'transformer': ['config_model'],
 }[args.model_type]
 for a in required_args:
     assert getattr(args, a) is not None, 'must specify {}'.format(a)
@@ -215,17 +213,17 @@ elif args.model_type == 'cnn':
         output_dropout=args.output_dropout)
 elif args.model_type == 'lstm':
     model = approx_models.LSTM_Approximator(
-        context_size, embedding_size, hidden_size, args.n_layers,
+        embedding_size, hidden_size, args.n_layers,
         None if args.no_transform_output else output_size,
         input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
         output_dropout=args.output_dropout)
 elif args.model_type == 'transformer':
+    config_model = get_config_model(args.config_model, vocab_size)
     model = approx_models.Transformer_Approximator(
-        context_size, embedding_size, hidden_size, args.n_blocks, args.n_heads,
-        None if args.no_transform_output else output_size,
-        embedding_dropout=args.input_dropout,
-        residual_dropout=args.hidden_dropout,
-        multihead_dropout=args.hidden_dropout)
+        hparams=config_model,
+        output_size=None if args.no_transform_output else output_size,
+        keep_output_layer=args.approx_distribution,
+    )
 criterion = nn.MSELoss()
 if args.approx_distribution:
     ce_criterion = torch.nn.CrossEntropyLoss()

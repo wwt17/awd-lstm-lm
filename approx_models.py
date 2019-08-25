@@ -6,6 +6,8 @@ import texar as tx
 from texar.modules import TransformerEncoder, SinusoidsPositionEmbedder
 
 from weight_drop import WeightDrop
+from utils import get_model_fn
+from gpt2_decoder import GPT2Decoder
 
 import copy
 
@@ -130,11 +132,10 @@ class CNN_Approximator(nn.Module):
 
 class LSTM_Approximator(nn.Module):
     def __init__(
-            self, sequence_length, input_size, hidden_size, n_layers,
+            self, input_size, hidden_size, n_layers,
             output_size=None,
             input_dropout=0., hidden_dropout=0., output_dropout=0.):
         super(LSTM_Approximator, self).__init__()
-        self.sequence_length = sequence_length
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.n_layers = n_layers
@@ -156,47 +157,15 @@ class LSTM_Approximator(nn.Module):
 
 
 class Transformer_Approximator(nn.Module):
-    def __init__(
-            self, sequence_length, input_size, hidden_size, n_blocks, n_heads,
-            output_size=None,
-            embedding_dropout=0.1, residual_dropout=0.1, multihead_dropout=0.1):
+    def __init__(self, hparams, output_size=None, keep_output_layer=False):
         super(Transformer_Approximator, self).__init__()
-        self.sequence_length = sequence_length
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.n_blocks = n_blocks
-        self.n_heads = n_heads
-        self.output_size = output_size if output_size is not None else hidden_size
-        self.pos_embedder = SinusoidsPositionEmbedder(
-            sequence_length,
-            hparams={"dim": input_size},
-        )
-        self.encoder = TransformerEncoder(hparams={
-            "dim": hidden_size,
-            "num_blocks": n_blocks,
-            "embedding_dropout": embedding_dropout,
-            "residual_dropout": residual_dropout,
-            "poswise_feedforward": tx.modules.encoders.transformer_encoder
-                .default_transformer_poswise_net_hparams(
-                    input_dim=hidden_size,
-                    output_dim=hidden_size,
-            ),
-            "multihead_attention": {
-                "num_units": hidden_size,
-                "num_heads": n_heads,
-                "dropout_rate": multihead_dropout,
-                "output_dim": hidden_size,
-                "use_bias": False,
-            },
-        })
-        self.output_layer = nn.Linear(hidden_size, output_size) if output_size else None
+        self.model = GPT2Decoder(hparams=hparams)
+        self.model.word_embedder = tx.core.layers.Identity()
+        if not keep_output_layer:
+            self.model.decoder._output_layer = tx.core.layers.Identity() if output_size is None else nn.Linear(hparams['decoder']['dim'], output_size)
 
     def forward(self, input): # input: (batch_size, sequence_length, embedding_size)
-        input = input * self.hidden_size ** .5
-        seq_len = torch.full(input.size()[:1], self.sequence_length, dtype=torch.int32, device=input.device)
-        pos_embeds = self.pos_embedder(sequence_length=seq_len)
-        input = input + pos_embeds
-        output = self.encoder(inputs=input, sequence_length=seq_len)
-        if self.output_layer is not None:
-            output = self.output_layer(output)
+        model_fn = get_model_fn(self.model)
+        output = model_fn(input, batch_first=True)
+        output = self.model.decoder.output_layer(output)
         return output

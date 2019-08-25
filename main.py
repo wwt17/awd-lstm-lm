@@ -13,11 +13,10 @@ from torch.utils.data import DataLoader
 import data
 import model
 
-import importlib
 import texar as tx
 
 from data import FixedLengthContextDataset
-from utils import batchify, get_batch, repackage_hidden, map_structure, get_splits, loss_repr, get_model_fn, get_criterion_fn, get_output_layer, get_distribution_perplexities_entropies, convert_data_tuple
+from utils import batchify, get_batch, repackage_hidden, map_structure, get_config_model, get_splits, loss_repr, get_model_fn, get_criterion_fn, get_output_layer, get_distribution_perplexities_entropies, convert_data_tuple
 from gpt2_decoder import GPT2Decoder
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
@@ -155,12 +154,7 @@ criterion = None
 ntokens = corpus.vocab.size
 print('ntokens: {}'.format(ntokens))
 if is_GPT2:
-    config_model = importlib.import_module(args.config_model)
-    config_model = {
-        k: v for k, v in config_model.__dict__.items()
-        if not k.startswith('__')}
-    config_model.pop('dim')
-    config_model['vocab_size'] = ntokens
+    config_model = get_config_model(args.config_model, ntokens)
     model = GPT2Decoder(hparams=config_model)
 else:
     model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
