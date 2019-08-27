@@ -7,6 +7,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 
@@ -38,6 +39,7 @@ parser.add_argument('--ckpt', type=str,  default='',
 # target
 parser.add_argument('--approx_distribution', action='store_true')
 parser.add_argument('--approx_dist_temp', type=float, default=1.)
+parser.add_argument('--approx_dist_lambda', type=float, default=1.)
 # Hidden state
 parser.add_argument('--predict_all_layers', action='store_true')
 parser.add_argument('--predict_c', action='store_true')
@@ -225,8 +227,6 @@ elif args.model_type == 'transformer':
         keep_output_layer=args.approx_distribution,
     )
 criterion = nn.MSELoss()
-if args.approx_distribution:
-    ce_criterion = torch.nn.CrossEntropyLoss()
 if args.cuda:
     model.cuda()
     criterion.cuda()
@@ -293,16 +293,21 @@ def get_prediction_and_loss(x, y, approx_output, get_output):
         else:
             prediction = prediction[:, -args.last_n:]
     if args.approx_distribution:
-        logits_q = prediction
-        log_q = (logits_q / args.approx_dist_temp).log_softmax(-1)
-        logits_p = output_layer(get_output(approx_output)).detach()
-        p = (logits_p / args.approx_dist_temp).softmax(-1)
-        stuff = (logits_q, log_q, logits_p, p)
-        loss = -(p * log_q).sum(-1).mean()
+        T = args.approx_dist_temp
+        L = args.approx_dist_lambda
+        logits = prediction
+        teacher_logits = output_layer(get_output(approx_output)).detach()
+        s = 1.
+        for d in logits.shape[1:-1]:
+            s *= d
+        kl_loss = F.kl_div((logits / T).log_softmax(-1), (teacher_logits / T).softmax(-1), reduction='batchmean') / s
+        logits_dim = len(logits.shape)
+        gt_ce_loss = F.cross_entropy(logits.permute(*([0, logits_dim - 1] + list(range(1, logits_dim - 1)))), y)
+        loss = (L * T * T) * kl_loss + (1. - L) * gt_ce_loss
     else:
         loss = criterion(prediction, approx_output)
-        stuff = None
-    return prediction, loss, stuff
+        gt_ce_loss = None
+    return prediction, loss, gt_ce_loss
 
 def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix='valid'):
     global global_step
@@ -332,11 +337,10 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
             x, y, approx_output = data_item
             batch_size = len(y)
             n += batch_size
-            prediction, loss, stuff = get_prediction_and_loss(x, y, approx_output, dataset.get_output)
+            prediction, loss, gt_ce_loss = get_prediction_and_loss(x, y, approx_output, dataset.get_output)
             total_loss += loss.item() * batch_size
             if args.approx_distribution:
-                logits_q, log_q, logits_p, p = stuff
-                approx_loss = ce_criterion(logits_q, y)
+                approx_loss = gt_ce_loss
             else:
                 output = dataset.get_output(prediction)
                 approx_loss = approx_criterion_fn(output, y)
@@ -348,9 +352,6 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
                 total_approxed_loss += approxed_loss * batch_size
                 postfix += ' approxed_ppl={:.3f}'.format(
                     math.exp(total_approxed_loss / n))
-            if args.approx_distribution:
-                max_p, _ = p.max(-1)
-                postfix += ' max_p={:.3f}'.format(max_p.mean().item())
             t.set_postfix_str(postfix)
 
     loss = total_loss / len(dataset)
@@ -391,8 +392,10 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
         x, y, approx_output = data_item
         batch_size = len(y)
         optimizer.zero_grad()
-        prediction, loss, stuff = get_prediction_and_loss(x, y, approx_output, dataset.get_output)
+        prediction, loss, gt_ce_loss = get_prediction_and_loss(x, y, approx_output, dataset.get_output)
         writer.add_scalar('{}/loss'.format(prefix), loss.item(), global_step)
+        if gt_ce_loss is not None:
+            writer.add_scalar('{}/gt_ce_loss'.format(prefix), gt_ce_loss.item(), global_step)
         total_loss += loss.item() * batch_size
         interval_loss += loss.item()
         loss.backward()
