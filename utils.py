@@ -114,3 +114,9 @@ def get_distribution_perplexities_entropies(logits, target):
 def convert_data_tuple(data_tuple):
     x, y = data_tuple
     return x.transpose(0, 1), y.transpose(0, 1)
+
+
+def force_reduce_lr(lr_scheduler):
+    lr_scheduler._reduce_lr(lr_scheduler.last_epoch)
+    lr_scheduler.cooldown_counter = lr_scheduler.cooldown
+    lr_scheduler.num_bad_epochs = 0

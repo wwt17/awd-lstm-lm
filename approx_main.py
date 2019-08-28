@@ -16,7 +16,7 @@ from data import HiddenStateDataset
 import model
 import approx_models
 
-from utils import map_structure, get_config_model, get_splits, get_embedder, get_embedding_size, get_output_layer, get_model_fn, get_criterion_fn
+from utils import map_structure, get_config_model, get_splits, get_embedder, get_embedding_size, get_output_layer, get_model_fn, get_criterion_fn, force_reduce_lr
 from gpt2_decoder import GPT2Decoder
 
 def arg_to_list(t):
@@ -109,6 +109,7 @@ parser.add_argument('--reduce_lr_patience', type=int, default=20)
 parser.add_argument('--reduce_lr_threshold', type=float, default=1e-4)
 parser.add_argument('--reduce_lr_cooldown', type=int, default=20)
 parser.add_argument('--reduce_lr_min_lr', type=float, default=0.)
+parser.add_argument('--force_reduce_lr', action='store_true')
 parser.add_argument('--wdecay', type=float, default=0.,
                     help='weight decay applied to all weights')
 parser.add_argument('--input_dropout', type=float, default=0.,
@@ -274,6 +275,8 @@ model_path = os.path.join(args.ckpt, 'best.pt')
 
 try:
     model_load(model_path)
+    if args.force_reduce_lr:
+        force_reduce_lr(lr_scheduler)
 except FileNotFoundError:
     pass
 
