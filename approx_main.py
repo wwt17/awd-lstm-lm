@@ -121,6 +121,8 @@ parser.add_argument('--weight_dropout', type=float, default=0.5,
                     help='amount of weight dropout to apply to the hidden matrices')
 parser.add_argument('--eval_approxed_loss', action='store_true',
                     help='whether to evaluate the loss of the approximated model')
+parser.add_argument('--save_intermediate', action='store_true',
+                    help='whether to save intermediate results besides the best one')
 args = parser.parse_args()
 required_args = {
     'mlp': ['hidden_size'],
@@ -429,7 +431,8 @@ def update_valid_loss(valid_loss):
     global best_valid_loss
     if valid_loss < best_valid_loss:
         print('Saving model (new best validation)')
-        model_save(os.path.join(args.ckpt, 'step{}.pt'.format(global_step)))
+        if args.save_intermediate:
+            model_save(os.path.join(args.ckpt, 'step{}.pt'.format(global_step)))
         model_save(os.path.join(args.ckpt, 'best.pt'))
         best_valid_loss = valid_loss
     lr_scheduler.step(valid_loss)
