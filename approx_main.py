@@ -2,6 +2,7 @@ import os
 import sys
 import argparse
 import time
+import itertools
 from tqdm import tqdm
 import math
 import numpy as np
@@ -26,28 +27,33 @@ def int_or_list(arg):
     l = arg_to_list(int)(arg)
     return l[0] if len(l) == 1 else l
 
-parser = argparse.ArgumentParser(description='PyTorch Approximator of RNN/LSTM Language Model')
+parser = argparse.ArgumentParser(description='Language Model Approximators')
 # Path
 parser.add_argument('--data', type=str, default='data/wikitext-103',
                     help='location of the data corpus')
-parser.add_argument('--output_hidden_path', type=str, default='output_hidden',
-                    help='path to saved output and hidden states')
-parser.add_argument('--approx_model', type=str, default='WT2.pt',
+parser.add_argument('--output_hidden_path', type=str, default='output_hidden/WT103.GPT2.512.6/512_32',
+                    help='path of saved output and hidden states')
+parser.add_argument('--approx_model', type=str, default='WT103.GPT2.512.6.5e0.pt',
                     help='path of model to approxiate')
 parser.add_argument('--ckpt', type=str,  default='',
                     help='path of model to save and resume')
 # target
-parser.add_argument('--approx_distribution', action='store_true')
+parser.add_argument('--approx_dist', action='store_true')
 parser.add_argument('--approx_dist_temp', type=float, default=1.)
 parser.add_argument('--approx_dist_lambda', type=float, default=1.)
 # Hidden state
 parser.add_argument('--predict_all_layers', action='store_true')
 parser.add_argument('--predict_c', action='store_true')
 # Model
-parser.add_argument('--model_type', type=str, choices=['mlp', 'cnn', 'lstm', 'transformer'], default='cnn',
+parser.add_argument('--model_type', type=str, choices=['mlp', 'cnn', 'lstm', 'transformer'], default='lstm',
                     required=True,
                     help='Type of approximator model (mlp, cnn, lstm, transformer)')
 ## Shared
+parser.add_argument('--skip_link', type=str, choices=['res'], default=None,
+                    help='The type of skip link (res)')
+parser.add_argument('--normalization', type=str, choices=['layer'], default=None,
+                    help='The type of normalization (layer)')
+parser.add_argument('--input_transform', action='store_true')
 parser.add_argument('--context_size', type=int, required=True,
                     help='size of used context')
 parser.add_argument('--last_n', type=int, default=None)
@@ -63,14 +69,13 @@ parser.add_argument('--channels', type=int_or_list,
 parser.add_argument('--kernel_size', type=int_or_list,
                     help='size of CNN kernels. can be a comma-separated list')
 parser.add_argument('--variational', action='store_true',
-                    help='whether to share CNN kernel paramters of different layers')
+                    help='whether to share CNN kernel parameters of different layers')
 parser.add_argument('--padding', action='store_false',
                     help='whether not to use padding before CNNs')
-parser.add_argument('--residual', action='store_true',
-                    help='whether to add residual links in CNNs')
 parser.add_argument('--output_layer_type', type=str, choices=['fc'], default='fc',
                     help='type of CNN output layer')
 ## LSTM
+parser.add_argument('--explicit_stack', action='store_true')
 parser.add_argument('--no_transform_output', action='store_true')
 ## Transformer
 parser.add_argument('--config_model', type=str, default='config_GPT2_117M',
@@ -81,8 +86,8 @@ parser.add_argument('--seed', type=int, default=0,
                     help='random seed. default to 0.')
 parser.add_argument('--cuda', action='store_false',
                     help='use CUDA')
-parser.add_argument('--num_workers', type=int, default=12,
-                    help='number of data loader workers. default to 12.')
+parser.add_argument('--num_workers', type=int, default=4,
+                    help='number of data loader workers. default to 4.')
 ## Procedure
 parser.add_argument('--log-interval', type=int, default=200, metavar='N',
                     help='report interval')
@@ -100,9 +105,9 @@ parser.add_argument('--test_batch_size', type=int, default=80,
 ## Optimize
 parser.add_argument('--optimizer', type=str,  default='adam', choices=['sgd', 'adam'],
                     help='optimizer to use (sgd, adam)')
-parser.add_argument('--lr', type=float, default=1e-4,
+parser.add_argument('--lr', type=float, default=1e-3,
                     help='initial learning rate')
-parser.add_argument('--clip', type=float, default=100.,
+parser.add_argument('--clip', type=float, default=10.,
                     help='gradient clipping')
 parser.add_argument('--reduce_lr_factor', type=float, default=.1)
 parser.add_argument('--reduce_lr_patience', type=int, default=20)
@@ -118,8 +123,9 @@ parser.add_argument('--hidden_dropout', type=float, default=0.,
                     help='dropout for hidden layers (0 = no dropout)')
 parser.add_argument('--output_dropout', type=float, default=0.,
                     help='dropout applied to output (0 = no dropout)')
-parser.add_argument('--weight_dropout', type=float, default=0.5,
+parser.add_argument('--weight_dropout', type=float, default=0.,
                     help='amount of weight dropout to apply to the hidden matrices')
+# Logging/save
 parser.add_argument('--eval_approxed_loss', action='store_true',
                     help='whether to evaluate the loss of the approximated model')
 parser.add_argument('--save_intermediate', action='store_true',
@@ -171,6 +177,9 @@ if args.cuda:
     approx_model.cuda()
     approx_criterion.cuda()
 is_GPT2 = isinstance(approx_model, GPT2Decoder)
+# Freeze all parameters of the approximated model, including the embedder and output_layer
+for param in itertools.chain(approx_model.parameters(), approx_criterion.parameters()):
+    param.requires_grad = False
 
 ###############################################################################
 # Load dataset
@@ -198,7 +207,7 @@ output_layer = get_output_layer(approx_model, is_GPT2)
 
 embedding_size = get_embedding_size(embedder, is_GPT2)
 hidden_size = args.hidden_size
-output_size = datasets['train'].target_size if not args.approx_distribution else vocab_size
+output_size = datasets['train'].target_size
 # output_size = output_layer.weight.size(1)
 print('embedding_size={} hidden_size={} output_size={}'.format(
     embedding_size, hidden_size, output_size))
@@ -212,14 +221,18 @@ elif args.model_type == 'cnn':
     model = approx_models.CNN_Approximator(
         context_size, embedding_size, args.n_layers, args.channels,
         args.kernel_size, output_size, variational=args.variational,
-        padding=args.padding, residual=args.residual,
+        padding=args.padding, skip_link=args.skip_link,
         output_layer_type=args.output_layer_type,
         input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
         output_dropout=args.output_dropout)
 elif args.model_type == 'lstm':
     model = approx_models.LSTM_Approximator(
         embedding_size, hidden_size, args.n_layers,
-        None if args.no_transform_output else output_size,
+        explicit_stack=args.explicit_stack,
+        skip_link=args.skip_link,
+        normalization=args.normalization,
+        input_transform=args.input_transform,
+        output_size=None if args.no_transform_output else output_size,
         input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
         output_dropout=args.output_dropout)
 elif args.model_type == 'transformer':
@@ -227,7 +240,6 @@ elif args.model_type == 'transformer':
     model = approx_models.Transformer_Approximator(
         hparams=config_model,
         output_size=None if args.no_transform_output else output_size,
-        keep_output_layer=args.approx_distribution,
     )
 criterion = nn.MSELoss()
 if args.cuda:
@@ -237,9 +249,9 @@ approx_model.eval()
 if is_GPT2:
     approx_model_fn = get_model_fn(approx_model)
 approx_criterion_fn = get_criterion_fn(approx_model, approx_criterion, is_GPT2)
-params = list(model.parameters()) + list(criterion.parameters())
+params = list(itertools.chain(model.parameters(), criterion.parameters()))
 print('parameters:')
-for name, param in list(model.named_parameters()) + list(criterion.named_parameters()):
+for name, param in itertools.chain(model.named_parameters(), criterion.named_parameters()):
     print('{}:\t{}'.format(name, param.size()))
 total_params = sum(map(torch.Tensor.nelement, params))
 print('Model total parameters:', total_params)
@@ -280,7 +292,7 @@ try:
 except FileNotFoundError:
     pass
 
-params = list(model.parameters()) + list(criterion.parameters())
+params = list(itertools.chain(model.parameters(), criterion.parameters()))
 
 ###############################################################################
 # Training code
@@ -297,10 +309,10 @@ def get_prediction_and_loss(x, y, approx_output, get_output):
             prediction = prediction[:, -1]
         else:
             prediction = prediction[:, -args.last_n:]
-    if args.approx_distribution:
+    if args.approx_dist:
         T = args.approx_dist_temp
         L = args.approx_dist_lambda
-        logits = prediction
+        logits = output_layer(prediction)
         teacher_logits = output_layer(get_output(approx_output)).detach()
         s = 1.
         for d in logits.shape[1:-1]:
@@ -344,7 +356,7 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
             n += batch_size
             prediction, loss, gt_ce_loss = get_prediction_and_loss(x, y, approx_output, dataset.get_output)
             total_loss += loss.item() * batch_size
-            if args.approx_distribution:
+            if args.approx_dist:
                 approx_loss = gt_ce_loss
             else:
                 output = dataset.get_output(prediction)

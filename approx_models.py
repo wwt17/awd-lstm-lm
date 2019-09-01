@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import texar as tx
 from texar.modules import TransformerEncoder, SinusoidsPositionEmbedder
 
+from locked_dropout import VariationalDropout
 from weight_drop import WeightDrop
 from utils import get_model_fn
 from gpt2_decoder import GPT2Decoder
@@ -56,7 +57,7 @@ class MLP_Approximator(nn.Module):
 class CNN_Approximator(nn.Module):
     def __init__(
             self, sequence_length, input_size, n_layers, channels, kernel_size,
-            output_size, variational=False, padding=True, residual=False,
+            output_size, variational=False, padding=True, skip_link=None,
             activation=F.relu, output_layer_type='fc',
             input_dropout=0., hidden_dropout=0., output_dropout=0.):
         super(CNN_Approximator, self).__init__()
@@ -79,7 +80,7 @@ class CNN_Approximator(nn.Module):
         else:
             sequence_length -= self.kernel_size[0] - 1
             assert sequence_length > 0
-        self.residual = residual
+        self.skip_link = skip_link
         self.convs = [nn.Conv1d(input_size, self.channels[0], self.kernel_size[0])]
         self.hidden_dropouts = [nn.Dropout(hidden_dropout)] if hidden_dropout else None
         for l in range(1, n_layers):
@@ -120,7 +121,7 @@ class CNN_Approximator(nn.Module):
             if self.hidden_dropouts is not None:
                 h_ = self.hidden_dropouts[l](h_)
             h_ = self.activation(h_)
-            if self.residual and l > 0:
+            if self.skip_link == 'res' and l > 0:
                 h = h + h_
             else:
                 h = h_
@@ -132,23 +133,55 @@ class CNN_Approximator(nn.Module):
 
 class LSTM_Approximator(nn.Module):
     def __init__(
-            self, input_size, hidden_size, n_layers,
-            output_size=None,
+            self, input_size, hidden_size, n_layers, explicit_stack=False, skip_link=None, normalization=None,
+            output_size=None, input_transform=False,
             input_dropout=0., hidden_dropout=0., output_dropout=0.):
         super(LSTM_Approximator, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.n_layers = n_layers
+        self.skip_link = skip_link
+        if skip_link:
+            assert explicit_stack
+        self.explicit_stack = explicit_stack
+        self.input_transform = input_transform
         self.output_size = output_size if output_size is not None else hidden_size
-        self.lstm = nn.LSTM(input_size, hidden_size, n_layers, dropout=hidden_dropout, batch_first=True)
-        self.input_dropout = nn.Dropout(input_dropout) if input_dropout else None
-        self.output_dropout = nn.Dropout(output_dropout) if output_dropout else None
+        if explicit_stack:
+            assert self.skip_link is None or input_size == hidden_size or self.input_transform
+            self.lstm = [nn.LSTM(input_size if l == 0 and not self.input_transform else hidden_size, hidden_size, batch_first=True) for l in range(n_layers)]
+            self.lstm = nn.ModuleList(self.lstm)
+            if normalization:
+                self.normalizations = [nn.LayerNorm(hidden_size) for l in range(n_layers-1)]
+                self.normalizations = nn.ModuleList(self.normalizations)
+            self.hidden_dropout = VariationalDropout(hidden_dropout) if hidden_dropout else None
+        else:
+            self.lstm = nn.LSTM(input_size, hidden_size, n_layers, dropout=hidden_dropout, batch_first=True)
+        if self.input_transform:
+            self.input_layer = nn.Linear(input_size, hidden_size)
+        self.input_dropout = VariationalDropout(input_dropout) if input_dropout else None
+        self.output_dropout = VariationalDropout(output_dropout) if output_dropout else None
         self.output_layer = nn.Linear(hidden_size, output_size) if output_size else None
 
     def forward(self, input): # input: (batch_size, sequence_length, embedding_size)
         if self.input_dropout is not None:
             input = self.input_dropout(input)
-        output, (h, c) = self.lstm(input)
+        if hasattr(self, 'input_layer'):
+            input = self.input_layer(input)
+        if isinstance(self.lstm, nn.ModuleList):
+            x = input
+            for l, rnn in enumerate(self.lstm):
+                out, _ = rnn(x)
+                if hasattr(self, 'normalizations') and l != len(self.lstm)-1:
+                    out = self.normalizations[l](out)
+                if self.hidden_dropout is not None and l != len(self.lstm)-1:
+                    out = self.hidden_dropout(out)
+                if self.skip_link == 'res':
+                    x = x + out
+                else:
+                    x = out
+            output = x
+        else:
+            output, (h, c) = self.lstm(input)
         if self.output_dropout is not None:
             output = self.output_dropout(output)
         if self.output_layer is not None:
@@ -157,12 +190,11 @@ class LSTM_Approximator(nn.Module):
 
 
 class Transformer_Approximator(nn.Module):
-    def __init__(self, hparams, output_size=None, keep_output_layer=False):
+    def __init__(self, hparams, output_size=None):
         super(Transformer_Approximator, self).__init__()
         self.model = GPT2Decoder(hparams=hparams)
         self.model.word_embedder = tx.core.layers.Identity()
-        if not keep_output_layer:
-            self.model.decoder._output_layer = tx.core.layers.Identity() if output_size is None else nn.Linear(hparams['decoder']['dim'], output_size)
+        self.model.decoder._output_layer = tx.core.layers.Identity() if output_size is None else nn.Linear(hparams['decoder']['dim'], output_size)
 
     def forward(self, input): # input: (batch_size, sequence_length, embedding_size)
         model_fn = get_model_fn(self.model)

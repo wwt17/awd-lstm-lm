@@ -13,3 +13,15 @@ class LockedDropout(nn.Module):
         mask = Variable(m, requires_grad=False) / (1 - dropout)
         mask = mask.expand_as(x)
         return mask * x
+
+class VariationalDropout(nn.Module):
+    def __init__(self, dropout_rate):
+        super().__init__()
+        self.dropout_rate = dropout_rate
+
+    def forward(self, x, batch_first=True):
+        if not self.training or not self.dropout_rate:
+            return x
+        keep_prob = 1 - self.dropout_rate
+        mask = x.new(*((x.size(0), 1) if batch_first else (1, x.size(1))), *x.size()[2:]).bernoulli_(keep_prob) / keep_prob
+        return mask.expand_as(x) * x
