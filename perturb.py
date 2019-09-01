@@ -134,9 +134,6 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
     pdata_source = FixedLengthContextDataset(pdata_source[examples_to_ignore:], args.seq_len) if pdata_source is not None else None
 
     with torch.no_grad():
-        if not is_GPT2:
-            # when using your own LM, ensure the init hidden function exists!
-            init_hidden = model.init_hidden(args.batch_size)
         data_loader = DataLoader(
             data_source,
             batch_size=args.batch_size,
@@ -168,6 +165,8 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
             if is_GPT2:
                 output = model_fn(data)
             else:
+                # when using your own LM, ensure the init hidden function exists!
+                init_hidden = model.init_hidden(data.size(1))
                 output, _ = model(data, init_hidden)
             if args.entropy:
                 distribution, losses, entropies = get_distribution_perplexities_entropies(output_layer(output[-1]), targets[-1])
