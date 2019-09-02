@@ -41,6 +41,7 @@ parser.add_argument('--ckpt', type=str,  default='',
 parser.add_argument('--approx_dist', action='store_true')
 parser.add_argument('--approx_dist_temp', type=float, default=1.)
 parser.add_argument('--approx_dist_lambda', type=float, default=1.)
+parser.add_argument('--approx_logit', action='store_true')
 # Hidden state
 parser.add_argument('--predict_all_layers', action='store_true')
 parser.add_argument('--predict_c', action='store_true')
@@ -309,18 +310,23 @@ def get_prediction_and_loss(x, y, approx_output, get_output):
             prediction = prediction[:, -1]
         else:
             prediction = prediction[:, -args.last_n:]
-    if args.approx_dist:
-        T = args.approx_dist_temp
-        L = args.approx_dist_lambda
+    assert not (args.approx_dist and args.approx_logit)
+    if args.approx_dist or args.approx_logit:
         logits = output_layer(prediction)
         teacher_logits = output_layer(get_output(approx_output)).detach()
-        s = 1.
-        for d in logits.shape[1:-1]:
-            s *= d
-        kl_loss = F.kl_div((logits / T).log_softmax(-1), (teacher_logits / T).softmax(-1), reduction='batchmean') / s
-        logits_dim = len(logits.shape)
-        gt_ce_loss = F.cross_entropy(logits.permute(*([0, logits_dim - 1] + list(range(1, logits_dim - 1)))), y)
-        loss = (L * T * T) * kl_loss + (1. - L) * gt_ce_loss
+        if args.approx_logit:
+            loss = F.mse_loss(logits, teacher_logits)
+            gt_ce_loss = None
+        else:
+            T = args.approx_dist_temp
+            L = args.approx_dist_lambda
+            s = 1.
+            for d in logits.shape[1:-1]:
+                s *= d
+            kl_loss = F.kl_div((logits / T).log_softmax(-1), (teacher_logits / T).softmax(-1), reduction='batchmean') / s
+            logits_dim = len(logits.shape)
+            gt_ce_loss = F.cross_entropy(logits.permute(*([0, logits_dim - 1] + list(range(1, logits_dim - 1)))), y)
+            loss = (L * T * T) * kl_loss + (1. - L) * gt_ce_loss
     else:
         loss = criterion(prediction, approx_output)
         gt_ce_loss = None
