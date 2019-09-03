@@ -320,13 +320,14 @@ def get_prediction_and_loss(x, y, approx_output, get_output):
         else:
             T = args.approx_dist_temp
             L = args.approx_dist_lambda
-            s = 1.
-            for d in logits.shape[1:-1]:
-                s *= d
-            kl_loss = F.kl_div((logits / T).log_softmax(-1), (teacher_logits / T).softmax(-1), reduction='batchmean') / s
+            if L > 0.:
+                s = 1.
+                for d in logits.shape[1:-1]:
+                    s *= d
+                kl_loss = F.kl_div((logits / T).log_softmax(-1), (teacher_logits / T).softmax(-1), reduction='batchmean') / s
             logits_dim = len(logits.shape)
             gt_ce_loss = F.cross_entropy(logits.permute(*([0, logits_dim - 1] + list(range(1, logits_dim - 1)))), y)
-            loss = (L * T * T) * kl_loss + (1. - L) * gt_ce_loss
+            loss = ((L * T * T) * kl_loss if L > 0. else 0.) + (1. - L) * gt_ce_loss
     else:
         loss = criterion(prediction, approx_output)
         gt_ce_loss = None
