@@ -6,11 +6,11 @@ This repository is forked from [this repository](https://github.com/salesforce/a
 
 Python 3 and PyTorch 0.4 are required for the current codebase.
 
-See [requirements.txt](requireements.txt) for requirements of Python packages.
+See [requirements.txt](requirements.txt) for requirements of Python packages.
 
 ## Experiments
 
-For data setup, see [data/Makefile](data/Makefile) for how to download and process the datasets needed, and run `make ${DATASET}` command.
+For data setup, see [data/Makefile](data/Makefile) for how to download and process the datasets needed, and run `make ${DATASET}` command under the `data` directory.
 
 ### Word level WikiText-103 (WT103) with LSTM
 
