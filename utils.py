@@ -120,3 +120,9 @@ def force_reduce_lr(lr_scheduler):
     lr_scheduler._reduce_lr(lr_scheduler.last_epoch)
     lr_scheduler.cooldown_counter = lr_scheduler.cooldown
     lr_scheduler.num_bad_epochs = 0
+
+
+def set_lr(lr_scheduler, lr):
+    print('set lr to {}'.format(lr))
+    for param_group in lr_scheduler.optimizer.param_groups:
+        param_group['lr'] = lr
