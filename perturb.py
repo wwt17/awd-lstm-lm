@@ -15,7 +15,7 @@ import data
 import model
 
 from data import FixedLengthContextDataset, get_vocab_all_pos
-from utils import map_structure, get_model_fn, get_criterion_fn, get_output_layer, get_distribution_perplexities_entropies, convert_data_tuple
+from utils import map_structure, get_model_fn, get_criterion_fn, get_embedder, get_output_layer, get_distribution_perplexities_entropies, convert_data_tuple
 from gpt2_decoder import GPT2Decoder
 # this is not a good practice, but making an exception in this case
 from perturbations import *
@@ -25,6 +25,8 @@ parser.add_argument('--data', type=str, default='data/wikitext-103',
                     help='location of the data corpus')
 parser.add_argument('--checkpoint', type=str, default='./WT2.pt',
                     help='model checkpoint to use')
+parser.add_argument('--approx_model', type=str, default=None,
+                    help='approximator model to use')
 # Consistent with Language Modeling code from Merity et al.
 parser.add_argument('--cuda', action='store_false',
                     help='Using this flag turns off CUDA, default value set to True')
@@ -77,20 +79,29 @@ if torch.cuda.is_available():
         torch.cuda.manual_seed(args.seed)
 
 print('Load model from {}'.format(args.checkpoint))
-start = time.time()
 model, criterion, optimizer = torch.load(args.checkpoint)
-print('[{:.1f} s]'.format(time.time() - start))
+if args.approx_model is not None:
+    print('Loading approximator model ...')
+    loaded = torch.load(args.approx_model)
+    approx_model = loaded[0]
+else:
+    approx_model = None
 
 is_GPT2 = isinstance(model, GPT2Decoder)
 
 if args.cuda:
     model.cuda()
+    if approx_model is not None:
+        approx_model.cuda()
 else:
     model.cpu()
+    if approx_model is not None:
+        approx_model.cpu()
 
 if is_GPT2:
     model_fn = get_model_fn(model)
 
+embedder = get_embedder(model, is_GPT2)
 output_layer = get_output_layer(model, is_GPT2)
 criterion_fn = get_criterion_fn(model, criterion, is_GPT2)
 
@@ -119,6 +130,8 @@ print('Made batches.')
 def evaluate(data_source, pdata_source, perturb_fn, args):
     # Turn on evaluation mode which disables dropout.
     model.eval()
+    if approx_model is not None:
+        approx_model.eval()
 
     n = 0
     total_loss, total_entropy = 0., 0.
@@ -162,7 +175,9 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
             pdata, ptargets = convert_data_tuple(pdata_tuple) if pdata_loader is not None else (None, None)
             data = perturb_fn(data, pdata, targets, ptargets, args)
 
-            if is_GPT2:
+            if approx_model is not None:
+                output = approx_model(embedder(data.transpose(0, 1))).transpose(0, 1)
+            elif is_GPT2:
                 output = model_fn(data)
             else:
                 # when using your own LM, ensure the init hidden function exists!
