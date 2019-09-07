@@ -4,12 +4,12 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.autograd import Variable
+import torch.nn.functional as F
 
 import data
 import model
 
-from utils import batchify, get_batch, repackage_hidden
+from utils import batchify, get_batch, repackage_hidden, loss_repr
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
 parser.add_argument('--data', type=str, default='data/penn',
@@ -49,18 +49,11 @@ test_data = batchify(corpus.test, test_batch_size, args)
 ntokens = len(corpus.dictionary)
 criterion = nn.CrossEntropyLoss()
 
-def one_hot(idx, size, cuda=True):
-    a = np.zeros((1, size), np.float32)
-    a[0][idx] = 1
-    v = Variable(torch.from_numpy(a))
-    if cuda: v = v.cuda()
-    return v
-
 def evaluate(data_source, batch_size=10, window=args.window):
     # Turn on evaluation mode which disables dropout.
     if args.model == 'QRNN': model.reset()
     model.eval()
-    total_loss = 0
+    total_loss = 0.
     ntokens = len(corpus.dictionary)
     hidden = model.init_hidden(batch_size)
     next_word_history = None
@@ -75,23 +68,23 @@ def evaluate(data_source, batch_size=10, window=args.window):
         ###
         # Fill pointer history
         start_idx = len(next_word_history) if next_word_history is not None else 0
-        next_word_history = torch.cat([one_hot(t.data[0], ntokens) for t in targets]) if next_word_history is None else torch.cat([next_word_history, torch.cat([one_hot(t.data[0], ntokens) for t in targets])])
+        next_word_history = F.one_hot(targets, ntokens) if next_word_history is None else torch.cat([next_word_history, F.one_hot(targets, ntokens)])
         #print(next_word_history)
-        pointer_history = Variable(rnn_out.data) if pointer_history is None else torch.cat([pointer_history, Variable(rnn_out.data)], dim=0)
+        pointer_history = rnn_out.data if pointer_history is None else torch.cat([pointer_history, rnn_out.data], dim=0)
         #print(pointer_history)
         ###
         # Built-in cross entropy
         # total_loss += len(data) * criterion(output_flat, targets).data[0]
         ###
         # Manual cross entropy
-        # softmax_output_flat = torch.nn.functional.softmax(output_flat)
+        # softmax_output_flat = F.softmax(output_flat)
         # soft = torch.gather(softmax_output_flat, dim=1, index=targets.view(-1, 1))
         # entropy = -torch.log(soft)
         # total_loss += len(data) * entropy.mean().data[0]
         ###
         # Pointer manual cross entropy
-        loss = 0
-        softmax_output_flat = torch.nn.functional.softmax(output_flat)
+        loss = 0.
+        softmax_output_flat = F.softmax(output_flat)
         for idx, vocab_loss in enumerate(softmax_output_flat):
             p = vocab_loss
             if start_idx + idx > window:
@@ -99,14 +92,14 @@ def evaluate(data_source, batch_size=10, window=args.window):
                 valid_pointer_history = pointer_history[start_idx + idx - window:start_idx + idx]
                 logits = torch.mv(valid_pointer_history, rnn_out[idx])
                 theta = args.theta
-                ptr_attn = torch.nn.functional.softmax(theta * logits).view(-1, 1)
-                ptr_dist = (ptr_attn.expand_as(valid_next_word) * valid_next_word).sum(0).squeeze()
+                ptr_attn = F.softmax(theta * logits).view(-1, 1)
+                ptr_dist = (ptr_attn * valid_next_word).sum(0)
                 lambdah = args.lambdasm
                 p = lambdah * ptr_dist + (1 - lambdah) * vocab_loss
             ###
             target_loss = p[targets[idx].data]
-            loss += (-torch.log(target_loss)).data[0]
-        total_loss += loss / batch_size
+            loss += (-torch.log(target_loss)).data
+        total_loss += loss.item() / batch_size
         ###
         hidden = repackage_hidden(hidden)
         next_word_history = next_word_history[-window:]
@@ -124,13 +117,11 @@ print(model)
 # Run on val data.
 val_loss = evaluate(val_data, test_batch_size)
 print('=' * 89)
-print('| End of pointer | val loss {:5.2f} | val ppl {:8.2f}'.format(
-    val_loss, math.exp(val_loss)))
+print('| End of pointer | val {}'.format(loss_repr(val_loss)))
 print('=' * 89)
 
 # Run on test data.
 test_loss = evaluate(test_data, test_batch_size)
 print('=' * 89)
-print('| End of pointer | test loss {:5.2f} | test ppl {:8.2f}'.format(
-    test_loss, math.exp(test_loss)))
+print('| End of pointer | test {}'.format(loss_repr(test_loss)))
 print('=' * 89)
