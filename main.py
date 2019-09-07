@@ -8,6 +8,7 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 import data
@@ -16,7 +17,7 @@ import model
 import texar as tx
 
 from data import FixedLengthContextDataset
-from utils import batchify, get_batch, repackage_hidden, map_structure, get_config_model, get_splits, loss_repr, get_model_fn, get_criterion_fn, get_output_layer, get_distribution_perplexities_entropies, convert_data_tuple
+from utils import batchify, get_batch, repackage_hidden, map_structure, get_config_model, get_splits, loss_repr, get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies, convert_data_tuple
 from gpt2_decoder import GPT2Decoder
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
@@ -24,6 +25,14 @@ parser.add_argument('--data', type=str, default='data/penn/',
                     help='location of the data corpus')
 parser.add_argument('--model', type=str, default='LSTM', choices=['LSTM', 'QRNN', 'GRU', 'GPT2'],
                     help='type of recurrent net (LSTM, QRNN, GRU)')
+parser.add_argument('--pointer', action='store_true',
+                    help='to test performance after adding cache pointer')
+parser.add_argument('--window', type=int, default=3785,
+                    help='pointer window length')
+parser.add_argument('--theta', type=float, default=0.6625523432485668,
+                    help='mix between uniform distribution and pointer softmax distribution over previous words')
+parser.add_argument('--lambdasm', type=float, default=0.12785920428335693,
+                    help='linear mix between only pointer (1) and only vocab (0) distribution')
 parser.add_argument('--emsize', type=int, default=400,
                     help='size of word embeddings')
 parser.add_argument('--nhid', type=int, default=1150,
@@ -296,7 +305,12 @@ if args.get_output_hidden:
     sys.exit(0)
 
 
-def evaluate(data_source, batch_size, prefix):
+def evaluate(data_source, batch_size, prefix, window=None):
+    pointer = (window is not None)
+    if pointer:
+        theta = args.theta
+        lambdah = args.lambdasm
+    eval_entropy = args.eval_entropy or pointer
     # Turn on evaluation mode which disables dropout.
     model.eval()
     if args.model == 'QRNN': model.reset()
@@ -305,15 +319,48 @@ def evaluate(data_source, batch_size, prefix):
         seq_len = args.bptt
         if not is_GPT2:
             hidden = model.init_hidden(batch_size)
+        if pointer:
+            next_word_history = torch.zeros([0, batch_size, ntokens], dtype=torch.float, device=device)
+            pointer_history = torch.zeros([0, batch_size, model.ninp if model.tie_weights else model.nhid], dtype=torch.float, device=device)
         for i in tqdm(range(0, data_source.size(0) - 1, seq_len)):
             data, targets = get_batch(data_source, i, seq_len)
             if is_GPT2:
                 output = model_fn(data)
             else:
-                output, hidden = model(data, hidden)
+                if pointer:
+                    output, hidden, rnn_outs, _ = model(data, hidden, return_h=True)
+                    rnn_out = rnn_outs[-1]
+                else:
+                    output, hidden = model(data, hidden)
                 hidden = repackage_hidden(hidden)
-            if args.eval_entropy:
-                _, losses, entropies = get_distribution_perplexities_entropies(output_layer(output), targets)
+            if eval_entropy:
+                logits = output_layer(output)
+                p = F.softmax(logits, -1)
+                if pointer:
+                    start_t = next_word_history.size(0)
+                    next_word_history = torch.cat([next_word_history, F.one_hot(targets, ntokens).float()], dim=0).detach()
+                    pointer_history = torch.cat([pointer_history, rnn_out], dim=0).detach()
+                    ptr_p = []
+                    for t in range(targets.size(0)):
+                        en_t = start_t + t
+                        st_t = max(0, en_t - window)
+                        if st_t == en_t:
+                            ptr_dist = torch.zeros_like(p[t])
+                        else:
+                            valid_next_word_history = next_word_history[st_t:en_t]
+                            valid_pointer_history = pointer_history[st_t:en_t]
+                            copy_scores = torch.einsum('tbi,bi->tb', valid_pointer_history, rnn_out[t])
+                            ptr_attn = F.softmax(theta * copy_scores, 0)
+                            ptr_dist = (ptr_attn.unsqueeze(-1) * valid_next_word_history).sum(0)
+                        ptr_p.append(ptr_dist.detach())
+                    ptr_p = torch.stack(ptr_p, dim=0)
+                    p = lambdah * ptr_p + (1. - lambdah) * p
+                    log_p = p.log()
+                    next_word_history = next_word_history[-window:].detach()
+                    pointer_history = pointer_history[-window:].detach()
+                else:
+                    log_p = F.log_softmax(logits, -1)
+                losses, entropies = get_perplexities_entropies(p, log_p, targets)
                 total_loss += losses.sum()
                 total_entropy += entropies.sum()
             else:
@@ -381,6 +428,15 @@ def train():
         ###
         batch += 1
         i += seq_len
+
+if args.pointer:
+    # Run on val and test data.
+    for stage in ['valid', 'test']:
+        val_loss = evaluate(datasets[stage], batch_sizes[stage], stage, window=args.window)
+        print('=' * 89)
+        print('| End of pointer | {} {}'.format(stage, loss_repr(val_loss)))
+        print('=' * 89)
+    sys.exit(0)
 
 # Loop over epochs.
 lr = args.lr

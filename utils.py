@@ -103,12 +103,17 @@ def get_criterion_fn(model, criterion, is_GPT2):
     return criterion_fn
 
 
+def get_perplexities_entropies(p, log_p, target):
+    perplexities = -torch.gather(log_p, -1, target.unsqueeze(-1)).squeeze(-1)
+    entropies = -(p * log_p).sum(-1)
+    return perplexities, entropies
+
+
 def get_distribution_perplexities_entropies(logits, target):
-    log_softmaxed = F.log_softmax(logits, -1)
-    softmaxed = F.softmax(logits, -1)
-    perplexities = -torch.gather(log_softmaxed, -1, target.unsqueeze(-1)).squeeze(-1)
-    entropies = -(softmaxed * log_softmaxed).sum(-1)
-    return softmaxed, perplexities, entropies
+    p = F.softmax(logits, -1)
+    log_p = F.log_softmax(logits, -1)
+    perplexities, entropies = get_perplexities_entropies(p, log_p, target)
+    return p, perplexities, entropies
 
 
 def convert_data_tuple(data_tuple):
