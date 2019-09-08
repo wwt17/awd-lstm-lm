@@ -257,19 +257,20 @@ for name, param in itertools.chain(model.named_parameters(), criterion.named_par
 total_params = sum(map(torch.Tensor.nelement, params))
 print('Model total parameters:', total_params)
 
-if args.optimizer == 'sgd':
-    optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
-elif args.optimizer == 'adam':
-    optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
-lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer,
-    factor=args.reduce_lr_factor,
-    patience=args.reduce_lr_patience,
-    verbose=True,
-    threshold=args.reduce_lr_threshold,
-    cooldown=args.reduce_lr_cooldown,
-    min_lr=args.reduce_lr_min_lr,
-)
+if args.lr is not None:
+    if args.optimizer == 'sgd':
+        optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
+    elif args.optimizer == 'adam':
+        optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        factor=args.reduce_lr_factor,
+        patience=args.reduce_lr_patience,
+        verbose=True,
+        threshold=args.reduce_lr_threshold,
+        cooldown=args.reduce_lr_cooldown,
+        min_lr=args.reduce_lr_min_lr,
+    )
 
 global_step = 0
 
