@@ -37,7 +37,7 @@ def drop_pos(data, pdata, boundary, args, pos_dict):
     pdata = pdata.cpu().numpy()
     examples = []
     for example, pcurr in zip(data, pdata[:, :-boundary]):
-        drop_idxs = np.array([idx for idx in pcurr if pos_dict.id_to_token_map_py[idx] in args.pos], dtype=np.int32)
+        drop_idxs = np.array([idx for idx, t in enumerate(pcurr) if pos_dict.id_to_token_map_py[t] in args.pos], dtype=np.int32)
         new_ex = np.delete(example, drop_idxs)
         examples.append(torch.from_numpy(new_ex))
 
@@ -51,7 +51,7 @@ def keep_pos(data, pdata, boundary, args, pos_dict):
     pdata = pdata.cpu().numpy()
     examples = []
     for example, pcurr in zip(data, pdata[:, :-boundary]):
-        drop_idxs = np.array([idx for idx in pcurr if pos_dict.id_to_token_map_py[idx] not in args.pos], dtype=np.int32)
+        drop_idxs = np.array([idx for idx, t in enumerate(pcurr) if pos_dict.id_to_token_map_py[t] not in args.pos], dtype=np.int32)
         new_ex = np.delete(example, drop_idxs)
         examples.append(torch.from_numpy(new_ex))
 
