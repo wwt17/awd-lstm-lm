@@ -15,6 +15,7 @@ For data setup, see [data/Makefile](data/Makefile) for how to download and proce
 ### Word level WikiText-103 (WT103) with LSTM
 
 + `python main.py --data data/wikitext-103 --model LSTM --nlayers 3 --emsize 200 --nhid 1000 --alpha 0 --beta 0 --dropoute 0 --dropouth 0.1 --dropouti 0.1 --dropout 0.1 --wdrop 0 --wdecay 0 --bptt 140 --batch_size 30 --optimizer adam --lr 1e-4 --ppl_gap -10 --save WT103.LSTM.pt --eval_entropy`
++ `python main.py --data data/wikitext-103 --wdrop 0 --resume WT103.LSTM.pt --pointer --bptt 500 --eval_batch_size 1 --test_batch_size 1`
 
 ### Word level WikiText-103 (WT103) with GPT2
 

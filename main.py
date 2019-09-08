@@ -433,9 +433,6 @@ if args.pointer:
     # Run on val and test data.
     for stage in ['valid', 'test']:
         val_loss = evaluate(datasets[stage], batch_sizes[stage], stage, window=args.window)
-        print('=' * 89)
-        print('| End of pointer | {} {}'.format(stage, loss_repr(val_loss)))
-        print('=' * 89)
     sys.exit(0)
 
 # Loop over epochs.
