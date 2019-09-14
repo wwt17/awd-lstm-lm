@@ -61,25 +61,13 @@ def read_file(fname):
             items.append(item)
     return Result(fname, *items)
 
-def load_pos_file(fname):
-    with open(fname, 'rb') as f:
-        items = []
-        while True:
-            try:
-                item = pickle.load(f)
-            except EOFError:
-                break
-            items.append(item)
-    assert len(items) == 1
-    return items[0]
-
 if __name__ == '__main__':
     _input = input
     argparser = argparse.ArgumentParser()
     argparser.add_argument('op', type=str, choices=['pos_analysis', 'plot', 'plot_loss', 'view', 'compare', 'compare_inverse'])
     argparser.add_argument('files', type=str, nargs='+')
-    argparser.add_argument('--pos_file', type=str, default=None)
     argparser.add_argument('--data', type=str, default='data/wikitext-103')
+    argparser.add_argument('--pos_data', type=str, default='data/wikitext-103_pos')
     argparser.add_argument('--max_seq_len', type=int, default=1000)
     argparser.add_argument('--seq_len', type=int, default=512)
     argparser.add_argument('--context_sizes', nargs='+', type=int)
@@ -93,18 +81,31 @@ if __name__ == '__main__':
     assert all(result.n == n for result in results), ' '.join(str(result.n) for result in results)
 
     if args.op == 'pos_analysis':
-        ptarget_tokens = load_pos_file(args.pos_file)
+        corpus = data.prepare_corpus(args.pos_data)
+        id_to_token_map_py = corpus.vocab.id_to_token_map_py
+        stages = []
+        for result in results:
+            for stage in ['valid', 'test']:
+                if stage in result.name:
+                    break
+            else:
+                stage = None
+            stages.append(stage)
+        seq = getattr(corpus, stage)
         for result in results:
             pos_stat = {}
             total_loss = 0.
-            for i in range(result.n):
+            for i, ptarget_token_id in enumerate(seq[-result.n:]):
                 item = result.geti(i)
-                ptarget_token = ptarget_tokens[i]
-                try:
-                    w, p = ptarget_token.split('_')
-                except:
-                    print('ptaraget_token: {}'.format(ptarget_token))
-                    raise
+                ptarget_token = id_to_token_map_py[int(ptarget_token_id)]
+                if ptarget_token in ['<pad>', '<bos>', '<eos>', '<unk>']:
+                    w, p = ptarget_token, ptarget_token
+                else:
+                    try:
+                        w, p = ptarget_token.split('_')
+                    except:
+                        print('ptaraget_token: {}'.format(ptarget_token))
+                        raise
                 if p not in pos_stat:
                     pos_stat[p] = []
                 pos_stat[p].append(item)
@@ -119,7 +120,7 @@ if __name__ == '__main__':
             res.sort(key=lambda x: x[2])
             for r in res:
                 print('POS: {:<5s} N: {:>6d} weight: {:>10.3f} loss: {:>6.3f} ppl: {:>8.3f} entropy: {:>6.3f}'.format(*r))
-    if args.op.startswith('plot'):
+    elif args.op.startswith('plot'):
         import matplotlib.pyplot as plt
         import matplotlib
         matplotlib.use('agg')
