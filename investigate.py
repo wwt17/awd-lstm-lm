@@ -9,6 +9,15 @@ from typing import NamedTuple, List, Tuple, Union
 import data
 from data import FixedLengthContextDataset
 
+class Limits:
+    def __init__(self, l=+math.inf, h=-math.inf):
+        self.l = l
+        self.h = h
+    def update(self, values):
+        for value in values:
+            self.l = min(self.l, value)
+            self.h = max(self.h, value)
+
 class Data(NamedTuple):
     loss: float
     entropy: float
@@ -74,6 +83,7 @@ if __name__ == '__main__':
     argparser.add_argument('--random', action='store_true')
     argparser.add_argument('--reverse', action='store_false')
     argparser.add_argument('--gap', type=float, default=-math.inf)
+    argparser.add_argument('--savefig', type=str)
     args = argparser.parse_args()
 
     results = list(map(read_file, args.files))
@@ -92,7 +102,11 @@ if __name__ == '__main__':
                 stage = None
             stages.append(stage)
         seq = getattr(corpus, stage)
+        all_res = {}
+        cnt_pos = {}
         for result in results:
+            print('{}:'.format(result.name))
+            context_size = int(result.name.split('.')[-1])
             pos_stat = {}
             total_loss = 0.
             for i, ptarget_token_id in enumerate(seq[-result.n:]):
@@ -120,6 +134,34 @@ if __name__ == '__main__':
             res.sort(key=lambda x: x[2])
             for r in res:
                 print('POS: {:<5s} N: {:>6d} weight: {:>10.3f} loss: {:>6.3f} ppl: {:>8.3f} entropy: {:>6.3f}'.format(*r))
+                pos = r[0]
+                cnt_pos[pos] = r[1]
+                if pos not in all_res:
+                    all_res[pos] = {}
+                all_res[pos][context_size] = (r[3], r[5])
+        import matplotlib.pyplot as plt
+        import matplotlib
+        matplotlib.use('agg')
+        plt.title('Different POS loss')
+        loss_limits = Limits()
+        for pos, a in all_res.items():
+            if cnt_pos[pos] < 8000:
+                continue
+            a = list(a.items())
+            a.sort(key=lambda x: x[0])
+            context_sizes, items = zip(*a)
+            losses, entropies = zip(*items)
+            d_losses = [loss - losses[-1] for loss in losses]
+            loss_limits.update(d_losses)
+            plt.plot(context_sizes, d_losses, label=pos)
+        plt.xlim(context_sizes[0], context_sizes[-1])
+        plt.ylim(loss_limits.l, loss_limits.h)
+        plt.gcf().set_size_inches(18.5, 10.5)
+        plt.legend()
+        if args.savefig is not None:
+            plt.savefig(args.savefig)
+        else:
+            plt.show()
     elif args.op.startswith('plot'):
         import matplotlib.pyplot as plt
         import matplotlib
@@ -130,14 +172,16 @@ if __name__ == '__main__':
                 plt.scatter(result.all_losses, result.all_entropies, s=.01)
                 plt.xlim(0, 20)
                 plt.ylim(0, 8.5)
-                plt.show()
         elif args.op == 'plot_loss':
             assert len(results) == 2
             plt.title('{} vs. {}'.format(results[0].name, results[1].name))
             plt.scatter(results[0].all_losses, results[1].all_losses, s=.01)
-            plt.show()
         else:
             raise NotImplementedError('Ignored op {}'.format(args.op))
+        if args.savefig is not None:
+            plt.savefig(args.savefig)
+        else:
+            plt.show()
     elif args.op.startswith('compare') or args.op.startswith('view'):
         context_sizes = args.context_sizes
         context_sizes.sort(reverse=True)
