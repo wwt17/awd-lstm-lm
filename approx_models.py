@@ -3,12 +3,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import texar as tx
-from texar.modules import TransformerEncoder, SinusoidsPositionEmbedder
+from texar.torch.modules import TransformerEncoder, SinusoidsPositionEmbedder
 
 from locked_dropout import VariationalDropout
 from weight_drop import WeightDrop
 from utils import get_model_fn
-from gpt2_decoder import GPT2Decoder
+from texar.torch.modules import GPT2Decoder
 
 import copy
 
@@ -193,11 +193,11 @@ class Transformer_Approximator(nn.Module):
     def __init__(self, hparams, output_size=None):
         super(Transformer_Approximator, self).__init__()
         self.model = GPT2Decoder(hparams=hparams)
-        self.model.word_embedder = tx.core.layers.Identity()
-        self.model.decoder._output_layer = tx.core.layers.Identity() if output_size is None else nn.Linear(hparams['decoder']['dim'], output_size)
+        self.model.word_embedder = tx.torch.core.layers.Identity()
+        self.model._output_layer = tx.torch.core.layers.Identity() if output_size is None else nn.Linear(hparams['dim'], output_size)
 
     def forward(self, input): # input: (batch_size, sequence_length, embedding_size)
         model_fn = get_model_fn(self.model)
         output = model_fn(input, batch_first=True)
-        output = self.model.decoder.output_layer(output)
+        output = self.model.output_layer(output)
         return output

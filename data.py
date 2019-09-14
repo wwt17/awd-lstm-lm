@@ -1,7 +1,7 @@
 import os
 import torch
 from torch.utils.data import Dataset
-from texar.data import Vocab
+from texar.torch.data import Vocab
 import h5py
 
 from collections import Counter
@@ -16,25 +16,40 @@ unk_token = '<unk>'
 
 
 class Corpus(object):
-    def __init__(self, path):
+    def __init__(self, path, with_pos=False):
+        special_token_fn = (lambda w: w + '_' + w) if with_pos else (lambda w: w)
+        vocab_filename = os.path.join(path, 'vocab.txt')
         self.vocab = Vocab(
-            os.path.join(path, 'vocab.txt'),
-            pad_token=pad_token,
-            bos_token=bos_token,
-            eos_token=eos_token,
-            unk_token=unk_token,
+            vocab_filename,
+            **{s: special_token_fn(globals()[s]) for s in
+               ['pad_token', 'bos_token', 'eos_token', 'unk_token']}
         )
+        if path.endswith('_bpe'):
+            with open(vocab_filename, 'r') as vocab_file:
+                vocab = list(line.strip() for line in vocab_file)
+            special_token = vocab[-1]
+            self.vocab._pad_token = special_token
+            self.vocab._bos_token = special_token
+            self.vocab._eos_token = special_token
+            self.vocab._unk_token = special_token
+            self.vocab._id_to_token_map_py = dict(zip(range(len(vocab)), vocab))
+            self.vocab._token_to_id_map_py = dict(zip(vocab, range(len(vocab))))
         for stage in ['train', 'valid', 'test']:
-            setattr(self, stage, self.tokenize(os.path.join(path, '{}.txt'.format(stage))))
+            try:
+                setattr(self, stage, self.tokenize(os.path.join(path, '{}.txt'.format(stage))))
+            except:
+                continue
 
     def tokenize(self, path):
         """Tokenizes a text file."""
         assert os.path.exists(path)
+        eos_token = self.vocab.eos_token
+
         # Add words to the dictionary
         with open(path, 'r') as f:
             tokens = 0
             for line in f:
-                words = line.split() + ['<eos>']
+                words = line.split() + [eos_token]
                 tokens += len(words)
 
         # Tokenize file content
@@ -42,7 +57,7 @@ class Corpus(object):
         with open(path, 'r') as f:
             token = 0
             for line in f:
-                words = line.split() + ['<eos>']
+                words = line.split() + [eos_token]
                 l = len(words)
                 ids[token : token + l] = torch.from_numpy(
                     self.vocab.map_tokens_to_ids_py(words))
@@ -51,7 +66,7 @@ class Corpus(object):
         return ids
 
 
-def prepare_corpus(data_name):
+def prepare_corpus(data_name, with_pos=False):
     import hashlib
     fn = 'corpus.{}.data'.format(hashlib.md5(data_name.encode()).hexdigest())
     if os.path.exists(fn):
@@ -59,7 +74,7 @@ def prepare_corpus(data_name):
         corpus = torch.load(fn)
     else:
         print('Producing dataset...')
-        corpus = Corpus(data_name)
+        corpus = Corpus(data_name, with_pos=with_pos)
         torch.save(corpus, fn)
     return corpus
 
@@ -73,13 +88,13 @@ def get_vocab_all_pos(pos_datafile, vocab):
     pos_ = {}
     with open(pos_datafile, 'r') as f:
         for line in f:
-            line = line.strip().split(' ') + ['<eos>_<eos>'] if len(line.strip()) > 0 else ['<eos>_<eos>']
+            line = line.strip().split() + ['<eos>_<eos>']
             for word_pair in line:
                 w, p = word_pair.split('_')
                 if p not in pos_:
                     pos_[p] = {}
                 token_id = vocab.token_to_id_map_py[w]
-                pos_[p][token_id] = vocab.counter[token_id]
+                pos_[p][token_id] = token_id
 
     for tag in pos_:
         # sort dictionary by rank and throw away the frequencies

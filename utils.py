@@ -44,6 +44,8 @@ def get_config_model(config_model, vocab_size):
         if not k.startswith('__')}
     config_model.pop('dim')
     config_model['vocab_size'] = vocab_size
+    config_decoder = config_model.pop('decoder')
+    config_model.update(config_decoder)
     return config_model
 
 
@@ -71,13 +73,13 @@ def get_model_fn(model):
     def model_fn(data, batch_first=False):
         if not batch_first:
             data = data.transpose(0, 1)
-        output_layer = model.decoder._output_layer
-        model.decoder._output_layer = tx.core.layers.Identity()
+        output_layer = model._output_layer
+        model._output_layer = tx.torch.core.layers.Identity()
         output = model(
             decoding_strategy='train_greedy',
             inputs=data)
-        model.decoder._output_layer = output_layer
-        out = output.raw_output
+        model._output_layer = output_layer
+        out = output.logits
         if not batch_first:
             out = out.transpose(0, 1)
         return out
@@ -93,7 +95,7 @@ def get_embedding_size(embedder, is_GPT2):
 
 
 def get_output_layer(model, is_GPT2):
-    return model.decoder.output_layer if is_GPT2 else model.decoder
+    return model.output_layer if is_GPT2 else model.decoder
 
 
 def get_criterion_fn(model, criterion, is_GPT2):

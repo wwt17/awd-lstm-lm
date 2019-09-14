@@ -18,7 +18,7 @@ import texar as tx
 
 from data import FixedLengthContextDataset
 from utils import batchify, get_batch, repackage_hidden, map_structure, get_config_model, get_splits, loss_repr, get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies, convert_data_tuple
-from gpt2_decoder import GPT2Decoder
+from texar.torch.modules import GPT2Decoder
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
 parser.add_argument('--data', type=str, default='data/penn/',
@@ -141,7 +141,7 @@ batch_sizes = {
 if args.get_output_hidden:
     datasets = {stage: getattr(corpus, stage) for stage in ['train', 'valid', 'test']}
 else:
-    train_data = batchify(corpus.train, train_batch_size, args)
+    train_data = batchify(corpus.train, train_batch_size, args) if hasattr(corpus, 'train') else None
     val_data = batchify(corpus.valid, eval_batch_size, args)
     test_data = batchify(corpus.test, test_batch_size, args)
     datasets = {
@@ -178,7 +178,7 @@ optimizer = None
 if args.resume:
     print('Resuming model ...')
     model_load(args.resume)
-    if args.lr is not None:
+    if args.lr is not None and optimizer is not None:
         optimizer.param_groups[0]['lr'] = args.lr
     if not is_GPT2:
         model.dropouti, model.dropouth, model.dropout, args.dropoute = args.dropouti, args.dropouth, args.dropout, args.dropoute
@@ -192,14 +192,15 @@ if args.resume:
 if args.cuda:
     device = torch.device('cuda')
     model.cuda()
-    criterion.cuda()
+    if criterion is not None:
+        criterion.cuda()
 else:
     device = torch.device('cpu')
 ###
 if is_GPT2:
     model_fn = get_model_fn(model)
-criterion_fn = get_criterion_fn(model, criterion, is_GPT2)
-params = list(model.parameters()) + list(criterion.parameters())
+criterion_fn = get_criterion_fn(model, criterion, is_GPT2) if criterion is not None else None
+params = list(model.parameters()) + (list(criterion.parameters()) if criterion is not None else [])
 total_params = sum(map(torch.Tensor.nelement, params))
 print('Args: {}'.format(args))
 print('Model total parameters: {}'.format(total_params))
