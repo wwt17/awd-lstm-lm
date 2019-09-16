@@ -1,3 +1,4 @@
+import os
 import pickle
 import argparse
 import random
@@ -6,6 +7,7 @@ import math
 import torch
 import numpy as np
 from typing import NamedTuple, List, Tuple, Union
+from collections import defaultdict
 import data
 from data import FixedLengthContextDataset
 
@@ -83,6 +85,7 @@ if __name__ == '__main__':
     argparser.add_argument('--random', action='store_true')
     argparser.add_argument('--reverse', action='store_false')
     argparser.add_argument('--gap', type=float, default=-math.inf)
+    argparser.add_argument('--relative', action='store_true')
     argparser.add_argument('--savefig', type=str)
     args = argparser.parse_args()
 
@@ -102,10 +105,11 @@ if __name__ == '__main__':
                 stage = None
             stages.append(stage)
         seq = getattr(corpus, stage)
-        all_res = {}
+        all_res = defaultdict(lambda: defaultdict(dict))
         cnt_pos = {}
         for result in results:
             print('{}:'.format(result.name))
+            dir_name = os.path.basename(os.path.dirname(result.name))
             context_size = int(result.name.split('.')[-1])
             pos_stat = {}
             total_loss = 0.
@@ -136,25 +140,29 @@ if __name__ == '__main__':
                 print('POS: {:<5s} N: {:>6d} weight: {:>10.3f} loss: {:>6.3f} ppl: {:>8.3f} entropy: {:>6.3f}'.format(*r))
                 pos = r[0]
                 cnt_pos[pos] = r[1]
-                if pos not in all_res:
-                    all_res[pos] = {}
-                all_res[pos][context_size] = (r[3], r[5])
+                all_res[pos][dir_name][context_size] = (r[3], r[5])
         import matplotlib.pyplot as plt
         import matplotlib
         matplotlib.use('agg')
         plt.title('Different POS loss')
         loss_limits = Limits()
-        for pos, a in all_res.items():
-            if cnt_pos[pos] < 8000:
-                continue
-            a = list(a.items())
-            a.sort(key=lambda x: x[0])
-            context_sizes, items = zip(*a)
-            losses, entropies = zip(*items)
-            d_losses = [loss - losses[-1] for loss in losses]
-            loss_limits.update(d_losses)
-            plt.plot(context_sizes, d_losses, label=pos)
-        plt.xlim(context_sizes[0], context_sizes[-1])
+        pos_cnt = 0
+        colors = ['black', 'purple', 'blue', 'cyan', 'green', 'yellow', 'darkorange', 'red', 'magenta', 'brown']
+        linestyles = ['-', '--', '-.', ':']
+        for pos, pos_content in all_res.items():
+            if cnt_pos[pos] >= 8000:
+                dir_name_cnt = 0
+                for dir_name, a in sorted(list(pos_content.items())):
+                    a = list(a.items())
+                    a.sort(key=lambda x: x[0])
+                    context_sizes, items = zip(*a)
+                    losses, entropies = zip(*items)
+                    y = [loss - losses[-1] for loss in losses] if args.relative else losses
+                    loss_limits.update(y)
+                    plt.plot(context_sizes, y, label='{}/{}'.format(dir_name, pos), color=colors[pos_cnt], linestyle=linestyles[dir_name_cnt])
+                    dir_name_cnt += 1
+                pos_cnt += 1
+        plt.xlim(0, context_sizes[-1])
         plt.ylim(loss_limits.l, loss_limits.h)
         plt.gcf().set_size_inches(18.5, 10.5)
         plt.legend()
