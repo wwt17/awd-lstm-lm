@@ -18,6 +18,7 @@ import texar as tx
 
 from data import FixedLengthContextDataset
 from utils import batchify, get_batch, repackage_hidden, map_structure, get_config_model, get_splits, loss_repr, get_model_fn, get_criterion_fn, get_output_layer, get_perplexities_entropies, convert_data_tuple
+import pointer
 from gpt2_decoder import GPT2Decoder
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
@@ -307,11 +308,11 @@ if args.get_output_hidden:
 
 
 def evaluate(data_source, batch_size, prefix, window=None):
-    pointer = (window is not None)
-    if pointer:
+    use_pointer = (window is not None)
+    if use_pointer:
         theta = args.theta
         lambdah = args.lambdasm
-    eval_entropy = args.eval_entropy or pointer
+    eval_entropy = args.eval_entropy or use_pointer
     # Turn on evaluation mode which disables dropout.
     model.eval()
     if args.model == 'QRNN': model.reset()
@@ -320,15 +321,14 @@ def evaluate(data_source, batch_size, prefix, window=None):
         seq_len = args.bptt
         if not is_GPT2:
             hidden = model.init_hidden(batch_size)
-        if pointer:
-            next_word_history = torch.zeros([0, batch_size, ntokens], dtype=torch.float, device=device)
-            pointer_history = torch.zeros([0, batch_size, model.ninp if model.tie_weights else model.nhid], dtype=torch.float, device=device)
+        if use_pointer:
+            history = pointer.init_history(batch_size, ntokens, model.ninp if model.tie_weights else model.nhid, device=device)
         for i in tqdm(range(0, data_source.size(0) - 1, seq_len)):
             data, targets = get_batch(data_source, i, seq_len)
             if is_GPT2:
                 output = model_fn(data)
             else:
-                if pointer:
+                if use_pointer:
                     output, hidden, rnn_outs, _ = model(data, hidden, return_h=True)
                     rnn_out = rnn_outs[-1]
                 else:
@@ -337,28 +337,10 @@ def evaluate(data_source, batch_size, prefix, window=None):
             if eval_entropy:
                 logits = output_layer(output)
                 p = F.softmax(logits, -1)
-                if pointer:
-                    start_t = next_word_history.size(0)
-                    next_word_history = torch.cat([next_word_history, F.one_hot(targets, ntokens).float()], dim=0).detach()
-                    pointer_history = torch.cat([pointer_history, rnn_out], dim=0).detach()
-                    ptr_p = []
-                    for t in range(targets.size(0)):
-                        en_t = start_t + t
-                        st_t = max(0, en_t - window)
-                        if st_t == en_t:
-                            ptr_dist = torch.zeros_like(p[t])
-                        else:
-                            valid_next_word_history = next_word_history[st_t:en_t]
-                            valid_pointer_history = pointer_history[st_t:en_t]
-                            copy_scores = torch.einsum('tbi,bi->tb', valid_pointer_history, rnn_out[t])
-                            ptr_attn = F.softmax(theta * copy_scores, 0)
-                            ptr_dist = (ptr_attn.unsqueeze(-1) * valid_next_word_history).sum(0)
-                        ptr_p.append(ptr_dist.detach())
-                    ptr_p = torch.stack(ptr_p, dim=0)
+                if use_pointer:
+                    ptr_p, history = pointer.get_p(targets, rnn_out, window, theta, history)
                     p = lambdah * ptr_p + (1. - lambdah) * p
                     log_p = p.log()
-                    next_word_history = next_word_history[-window:].detach()
-                    pointer_history = pointer_history[-window:].detach()
                 else:
                     log_p = F.log_softmax(logits, -1)
                 losses, entropies = get_perplexities_entropies(p, log_p, targets)
