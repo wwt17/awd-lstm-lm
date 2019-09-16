@@ -64,7 +64,7 @@ parser.add_argument('--use_range', nargs='+', type=lambda s: list(map(int, s)),
 parser.add_argument('--entropy', action='store_true',
                     help='Get entropy')
 parser.add_argument('--topk', type=int, default=10)
-parser.add_argument('--num_workers', type=int, default=12,
+parser.add_argument('--num_workers', type=int, default=4,
                     help='Number of workers to load dataset')
 args = parser.parse_args()
 print(args)
@@ -110,7 +110,7 @@ corpus = data.prepare_corpus(args.data)
 pos_datafile = os.path.dirname(args.data if args.data.endswith('/') else args.data+'/')+'_pos/'
 print('try POS data file: {}'.format(pos_datafile))
 if os.path.exists(pos_datafile):
-    pos_corpus = data.Corpus(pos_datafile)
+    pos_corpus = data.prepare_corpus(pos_datafile, with_pos=True)
     print('Built pos corpus')
 else:
     print('POS file does not exist.')

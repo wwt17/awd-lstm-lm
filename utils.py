@@ -77,7 +77,7 @@ def get_model_fn(model):
             decoding_strategy='train_greedy',
             inputs=data)
         model.decoder._output_layer = output_layer
-        out = output.raw_output
+        out = output.logits
         if not batch_first:
             out = out.transpose(0, 1)
         return out
