@@ -24,7 +24,7 @@ from perturbations import *
 parser = argparse.ArgumentParser(description='Test language model on perturbed inputs in the restricted context setting')
 parser.add_argument('--data', type=str, default='data/wikitext-103',
                     help='location of the data corpus')
-parser.add_argument('--checkpoint', type=str, default='./WT2.pt',
+parser.add_argument('--checkpoint', type=str, default=None,
                     help='model checkpoint to use')
 parser.add_argument('--approx_model', type=str, default=None,
                     help='approximator model to use')
@@ -83,8 +83,11 @@ if torch.cuda.is_available():
     else:
         torch.cuda.manual_seed(args.seed)
 
-print('Load model from {}'.format(args.checkpoint))
-model, criterion, optimizer = torch.load(args.checkpoint)
+if args.checkpoint is not None:
+    print('Load model from {}'.format(args.checkpoint))
+    model, criterion, optimizer = torch.load(args.checkpoint)
+else:
+    model = None
 if args.approx_model is not None:
     print('Loading approximator model ...')
     loaded = torch.load(args.approx_model)
@@ -94,14 +97,11 @@ else:
 
 is_GPT2 = isinstance(model, GPT2Decoder)
 
-if args.cuda:
-    model.cuda()
-    if approx_model is not None:
-        approx_model.cuda()
-else:
-    model.cpu()
-    if approx_model is not None:
-        approx_model.cpu()
+device = torch.device('cuda' if args.cuda else 'cpu')
+if model is not None:
+    model.to(device)
+if approx_model is not None:
+    approx_model.to(device)
 
 if is_GPT2:
     model_fn = get_model_fn(model)
