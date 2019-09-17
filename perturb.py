@@ -15,7 +15,8 @@ import data
 import model
 
 from data import FixedLengthContextDataset, get_vocab_all_pos
-from utils import map_structure, get_model_fn, get_criterion_fn, get_embedder, get_output_layer, get_distribution_perplexities_entropies, convert_data_tuple
+from utils import map_structure, get_model_fn, get_criterion_fn, get_embedder, get_output_layer, get_perplexities_entropies, convert_data_tuple
+import pointer
 from gpt2_decoder import GPT2Decoder
 # this is not a good practice, but making an exception in this case
 from perturbations import *
@@ -63,6 +64,10 @@ parser.add_argument('--use_range', nargs='+', type=lambda s: list(map(int, s)),
                     help='Use these values for the boundary loop, but first convert to ints. Sample usage is --use_range 5 20 100')
 parser.add_argument('--entropy', action='store_true',
                     help='Get entropy')
+parser.add_argument('--pointer', action='store_true',
+                    help='add cache pointer')
+parser.add_argument('--theta', type=float, default=0.6625523432485668)
+parser.add_argument('--lambdasm', type=float, default=0.12785920428335693)
 parser.add_argument('--topk', type=int, default=10)
 parser.add_argument('--num_workers', type=int, default=4,
                     help='Number of workers to load dataset')
@@ -128,6 +133,11 @@ else:
 print('Made batches.')
 
 def evaluate(data_source, pdata_source, perturb_fn, args):
+    use_pointer = args.pointer
+    if use_pointer:
+        theta = args.theta
+        lambdah = args.lambdasm
+    eval_entropy = args.entropy or use_pointer
     # Turn on evaluation mode which disables dropout.
     model.eval()
     if approx_model is not None:
@@ -182,10 +192,23 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
             else:
                 # when using your own LM, ensure the init hidden function exists!
                 init_hidden = model.init_hidden(data.size(1))
-                output, _ = model(data, init_hidden)
-            if args.entropy:
-                distribution, losses, entropies = get_distribution_perplexities_entropies(output_layer(output[-1]), targets[-1])
-                topk = distribution.topk(args.topk, dim=-1)
+                if use_pointer:
+                    output, _, rnn_outs, _ = model(data, init_hidden, return_h=True)
+                    rnn_out = rnn_outs[-1]
+                else:
+                    output, _ = model(data, init_hidden)
+            if eval_entropy:
+                logits = output_layer(output[-1])
+                p = logits.softmax(-1)
+                if use_pointer:
+                    init_history = pointer.init_history(data.size(1), p.size(-1), rnn_out.size(-1), device=p.device)
+                    ptr_p, _ = pointer.get_p(targets, rnn_out, data.size(0), theta, init_history)
+                    p = lambdah * ptr_p[-1] + (1. - lambdah) * p
+                    log_p = p.log()
+                else:
+                    log_p = logits.log_softmax(-1)
+                losses, entropies = get_perplexities_entropies(p, log_p, targets[-1])
+                topk = p.topk(args.topk, dim=-1)
                 topk = map_structure(lambda t: t.cpu().numpy(), topk)
                 all_losses += losses.tolist()
                 all_entropies += entropies.tolist()

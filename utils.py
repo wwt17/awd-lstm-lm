@@ -109,13 +109,6 @@ def get_perplexities_entropies(p, log_p, target):
     return perplexities, entropies
 
 
-def get_distribution_perplexities_entropies(logits, target):
-    p = F.softmax(logits, -1)
-    log_p = F.log_softmax(logits, -1)
-    perplexities, entropies = get_perplexities_entropies(p, log_p, target)
-    return p, perplexities, entropies
-
-
 def convert_data_tuple(data_tuple):
     x, y = data_tuple
     return x.transpose(0, 1), y.transpose(0, 1)

@@ -8,7 +8,6 @@ import math
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 import data
@@ -336,13 +335,13 @@ def evaluate(data_source, batch_size, prefix, window=None):
                 hidden = repackage_hidden(hidden)
             if eval_entropy:
                 logits = output_layer(output)
-                p = F.softmax(logits, -1)
+                p = logits.softmax(-1)
                 if use_pointer:
                     ptr_p, history = pointer.get_p(targets, rnn_out, window, theta, history)
                     p = lambdah * ptr_p + (1. - lambdah) * p
                     log_p = p.log()
                 else:
-                    log_p = F.log_softmax(logits, -1)
+                    log_p = logits.log_softmax(-1)
                 losses, entropies = get_perplexities_entropies(p, log_p, targets)
                 total_loss += losses.sum()
                 total_entropy += entropies.sum()
