@@ -35,7 +35,7 @@ parser.add_argument('--seed', type=int, default=0,
                     help='random seed')
 parser.add_argument('--logdir', type=str, default='./',
                     help='location to write per token log loss')
-parser.add_argument('--stage', default='valid', choices=['valid', 'test'],
+parser.add_argument('--stage', default='valid', choices=['train', 'valid', 'test'],
                     help='Run on valid/test set')
 parser.add_argument('--batch_size', type=int, default=50, metavar='N',
                     help='batch size')
@@ -43,6 +43,7 @@ parser.add_argument('--seq_len', type=int, default=300,
                     help='sequence length')
 parser.add_argument('--max_seq_len', type=int, default=1000,
                     help='Maximum possible sequence length to make all experiments start at the same example i.e. skip the same number of tokens at the start')
+parser.add_argument('--sample_gap', type=int, default=1)
 parser.add_argument('--freq', type=int, default=108,
                     help='Frequent words cut-off, all words with corpus count > 800')
 parser.add_argument('--rare', type=int, default=1986,
@@ -154,7 +155,16 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
     examples_to_ignore = args.max_seq_len - args.seq_len
     print('Number of examples to ignore: {}'.format(examples_to_ignore))
     data_source = FixedLengthContextDataset(data_source[examples_to_ignore:], args.seq_len)
-    pdata_source = FixedLengthContextDataset(pdata_source[examples_to_ignore:], args.seq_len) if pdata_source is not None else None
+    n_ = len(data_source)
+    sample_indices = list(range(-1, n_, args.sample_gap))
+    if sample_indices[-1] != n_ - 1:
+        sample_indices.append(n_ - 1)
+    sample_indices_p = 0
+    data_source = torch.utils.data.Subset(data_source, sample_indices[1:])
+    if pdata_source is not None:
+        pdata_source = FixedLengthContextDataset(pdata_source[examples_to_ignore:], args.seq_len)
+        assert len(pdata_source) == n_
+        pdata_source = torch.utils.data.Subset(pdata_source, sample_indices[1:])
 
     with torch.no_grad():
         data_loader = DataLoader(
@@ -183,6 +193,15 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
             if n == 0:
                 print('First word: {}'.format(corpus.vocab.id_to_token_map_py[int(data[-1, 0])]))
             pdata, ptargets = convert_data_tuple(pdata_tuple) if pdata_loader is not None else (None, None)
+
+            batch_size = data.size(1)
+
+            gaps = []
+            for i in range(batch_size):
+                gaps.append(sample_indices[sample_indices_p + 1] - sample_indices[sample_indices_p])
+                sample_indices_p += 1
+            max_gap = max(gaps)
+
             data = perturb_fn(data, pdata, targets, ptargets, args)
 
             if approx_model is not None:
@@ -191,38 +210,42 @@ def evaluate(data_source, pdata_source, perturb_fn, args):
                 output = model_fn(data)
             else:
                 # when using your own LM, ensure the init hidden function exists!
-                init_hidden = model.init_hidden(data.size(1))
+                init_hidden = model.init_hidden(batch_size)
                 if use_pointer:
                     output, _, rnn_outs, _ = model(data, init_hidden, return_h=True)
                     rnn_out = rnn_outs[-1]
                 else:
                     output, _ = model(data, init_hidden)
+            output_ = output[-max_gap:]
+            targets_ = targets[-max_gap:]
             if eval_entropy:
-                logits = output_layer(output[-1])
+                logits = output_layer(output_)
                 p = logits.softmax(-1)
                 if use_pointer:
-                    init_history = pointer.init_history(data.size(1), p.size(-1), rnn_out.size(-1), device=p.device)
+                    init_history = pointer.init_history(batch_size, p.size(-1), rnn_out.size(-1), device=p.device)
                     ptr_p, _ = pointer.get_p(targets, rnn_out, data.size(0), theta, init_history)
-                    p = lambdah * ptr_p[-1] + (1. - lambdah) * p
+                    p = lambdah * ptr_p[-max_gap:] + (1. - lambdah) * p
                     log_p = p.log()
                 else:
                     log_p = logits.log_softmax(-1)
-                losses, entropies = get_perplexities_entropies(p, log_p, targets[-1])
-                topk = p.topk(args.topk, dim=-1)
-                topk = map_structure(lambda t: t.cpu().numpy(), topk)
-                all_losses += losses.tolist()
-                all_entropies += entropies.tolist()
-                all_topk.extend(zip(*topk))
-                total_loss += losses.sum().item()
-                total_entropy += entropies.sum().item()
+                losses_batch, entropies_batch = get_perplexities_entropies(p, log_p, targets_)
+                topk_batch = p.topk(args.topk, dim=-1)
+                topk_batch = map_structure(lambda t: t.cpu().numpy(), topk_batch)
+                for i, gap in enumerate(gaps):
+                    losses, entropies, topk = map_structure(lambda t: t[-gap:, i], (losses_batch, entropies_batch, topk_batch))
+                    all_losses += losses.tolist()
+                    all_entropies += entropies.tolist()
+                    all_topk.extend(zip(*topk))
+                    total_loss += losses.sum().item()
+                    total_entropy += entropies.sum().item()
                 loss = losses.mean()
                 entropy = entropies.mean()
             else:
-                loss = criterion_fn(output[-1:], targets[-1:])
+                loss = criterion_fn(output_, targets_)
                 entropy = 0.
-                total_loss += targets.size(1) * loss.item()
-            n += targets.size(1)
-            t.set_postfix_str('loss={:8.6f} ppl={:7.3f} entropy={:7.5f}'.format(loss, math.exp(loss), entropy))
+                total_loss += batch_size * loss.item()
+            n += sum(gaps)
+            t.set_postfix_str('loss={:9.6f} ppl={:11.3f} entropy={:7.5f}'.format(loss, math.exp(loss), entropy))
 
         print('Last word: {}'.format(corpus.vocab.id_to_token_map_py[int(data[-1, -1])]))
         print('Total: {}'.format(n))
