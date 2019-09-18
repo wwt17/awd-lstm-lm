@@ -75,7 +75,7 @@ def read_file(fname):
 if __name__ == '__main__':
     _input = input
     argparser = argparse.ArgumentParser()
-    argparser.add_argument('op', type=str, choices=['pos_analysis', 'plot', 'plot_loss', 'view', 'compare', 'compare_inverse'])
+    argparser.add_argument('op', type=str, choices=['pos_analysis', 'plot', 'plot_loss', 'plot_sorted', 'view', 'compare', 'compare_inverse'])
     argparser.add_argument('files', type=str, nargs='+')
     argparser.add_argument('--data', type=str, default='data/wikitext-103')
     argparser.add_argument('--pos_data', type=str, default='data/wikitext-103_pos')
@@ -178,15 +178,31 @@ if __name__ == '__main__':
         import matplotlib
         matplotlib.use('agg')
         if args.op == 'plot':
-            for result in results:
-                plt.title(result.name)
-                plt.scatter(result.all_losses, result.all_entropies, s=.01)
-                plt.xlim(0, 20)
-                plt.ylim(0, 8.5)
+            for result_i, result in enumerate(results):
+                ax = plt.subplot(len(results), 1, result_i + 1)
+                ax.set_title(result.name)
+                ax.scatter(result.all_losses, result.all_entropies, s=.01)
+                ax.xlim(0, 20)
+                ax.ylim(0, 8.5)
         elif args.op == 'plot_loss':
             assert len(results) == 2
             plt.title('{} vs. {}'.format(results[0].name, results[1].name))
             plt.scatter(results[0].all_losses, results[1].all_losses, s=.01)
+        elif args.op == 'plot_sorted':
+            for result_i, result in enumerate(results):
+                title = '{} loss'.format(result.name)
+                x = np.arange(result.n)
+                print('plotting {}'.format(title))
+                ax = plt.subplot(len(results), 2, result_i * 2 + 1)
+                ax.set_title(title)
+                y = sorted(result.all_losses)
+                ax.bar(x, y, width=1., align='edge')
+                title = '{} entropy'.format(result.name)
+                print('plotting {}'.format(title))
+                ax = plt.subplot(len(results), 2, result_i * 2 + 2)
+                ax.set_title(title)
+                y = sorted(result.all_entropies)
+                ax.bar(x, y, width=1., align='edge')
         else:
             raise NotImplementedError('Ignored op {}'.format(args.op))
         if args.savefig is not None:
