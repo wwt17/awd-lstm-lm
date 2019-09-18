@@ -145,24 +145,27 @@ if __name__ == '__main__':
         import matplotlib
         matplotlib.use('agg')
         plt.title('Different POS loss')
+        context_limits = Limits(0)
         loss_limits = Limits()
         pos_cnt = 0
         colors = ['black', 'purple', 'blue', 'cyan', 'green', 'yellow', 'darkorange', 'red', 'magenta', 'brown']
         linestyles = ['-', '--', '-.', ':']
+        all_dir_names = {}
         for pos, pos_content in all_res.items():
             if cnt_pos[pos] >= 8000:
-                dir_name_cnt = 0
                 for dir_name, a in sorted(list(pos_content.items())):
+                    if dir_name not in all_dir_names:
+                        all_dir_names[dir_name] = len(all_dir_names)
                     a = list(a.items())
                     a.sort(key=lambda x: x[0])
                     context_sizes, items = zip(*a)
                     losses, entropies = zip(*items)
                     y = [loss - losses[-1] for loss in losses] if args.relative else losses
                     loss_limits.update(y)
-                    plt.plot(context_sizes, y, label='{}/{}'.format(dir_name, pos), color=colors[pos_cnt], linestyle=linestyles[dir_name_cnt])
-                    dir_name_cnt += 1
+                    context_limits.update(context_sizes)
+                    plt.plot(context_sizes, y, label='{}/{}'.format(dir_name, pos), color=colors[pos_cnt], linestyle=linestyles[all_dir_names[dir_name]])
                 pos_cnt += 1
-        plt.xlim(0, context_sizes[-1])
+        plt.xlim(context_limits.l, context_limits.h)
         plt.ylim(loss_limits.l, loss_limits.h)
         plt.gcf().set_size_inches(18.5, 10.5)
         plt.legend()
