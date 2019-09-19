@@ -125,7 +125,10 @@ else:
 print('On {} set!!!'.format(args.stage))
 data_ = getattr(corpus, args.stage)
 if pos_corpus is not None:
-    pos_data = getattr(pos_corpus, args.stage)
+    try:
+        pos_data = getattr(pos_corpus, args.stage)
+    except AttributeError:
+        pos_data = None
     pos_dict = pos_corpus.vocab
 else:
     pos_data = None
