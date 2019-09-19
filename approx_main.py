@@ -316,6 +316,9 @@ def get_prediction_and_loss(x, y, approx_output, get_output):
     assert not (args.approx_dist and args.approx_logit)
     if args.approx_dist or args.approx_logit:
         logits = output_layer(prediction)
+        p = logits.softmax(-1)
+        log_p = logits.log_softmax(-1)
+        entropies = -(p * log_p).sum(-1)
         teacher_logits = output_layer(get_output(approx_output)).detach()
         if args.approx_logit:
             loss = F.mse_loss(logits, teacher_logits)
@@ -333,8 +336,8 @@ def get_prediction_and_loss(x, y, approx_output, get_output):
             loss = ((L * T * T) * kl_loss if L > 0. else 0.) + (1. - L) * gt_ce_loss
     else:
         loss = criterion(prediction, approx_output)
-        gt_ce_loss = None
-    return prediction, loss, gt_ce_loss
+        gt_ce_loss, entropies = None, None
+    return prediction, loss, gt_ce_loss, entropies
 
 def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix='valid'):
     global global_step
@@ -350,6 +353,7 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
         num_workers=args.num_workers,
     )
     total_loss = 0.
+    total_entropy = 0.
     total_approx_loss = 0.
     if args.eval_approxed_loss:
         total_approxed_loss = 0.
@@ -364,8 +368,10 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
             x, y, approx_output = data_item
             batch_size = len(y)
             n += batch_size
-            prediction, loss, gt_ce_loss = get_prediction_and_loss(x, y, approx_output, dataset.get_output)
+            prediction, loss, gt_ce_loss, entropies = get_prediction_and_loss(x, y, approx_output, dataset.get_output)
             total_loss += loss.item() * batch_size
+            if entropies is not None:
+                total_entropy += entropies.sum().item()
             if args.approx_dist:
                 approx_loss = gt_ce_loss
             else:
@@ -374,6 +380,9 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
             total_approx_loss += approx_loss.item() * batch_size
             postfix = 'ppl={:.3f}'.format(
                 math.exp(total_approx_loss / n))
+            if entropies is not None:
+                postfix += ' ent={:.3f}'.format(
+                    total_entropy / n)
             if args.eval_approxed_loss:
                 approxed_loss = approx_criterion_fn(dataset.get_output(approx_output), y)
                 total_approxed_loss += approxed_loss * batch_size
@@ -382,13 +391,16 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
             t.set_postfix_str(postfix)
 
     loss = total_loss / len(dataset)
+    entropy = total_entropy / len(dataset)
     approx_loss = total_approx_loss / len(dataset)
     ppl = math.exp(approx_loss)
-    print('{} loss={:.6f} approx loss={:6.2f} ppl={:6.2f}'.format(
-        prefix, loss, approx_loss, ppl))
+    print('{} loss={:.6f} approx loss={:6.2f} ppl={:6.2f} ent={:2.3f}'.format(
+        prefix, loss, approx_loss, ppl, entropy))
     writer.add_scalar('{}/loss'.format(prefix), loss, global_step)
     writer.add_scalar('{}/approx_loss'.format(prefix), approx_loss, global_step)
     writer.add_scalar('{}/ppl'.format(prefix), ppl, global_step)
+    if entropy:
+        writer.add_scalar('{}/entropy'.format(prefix), entropy, global_step)
 
     if args.last_n is not None:
         model.last_n = args.last_n
@@ -408,7 +420,9 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
         num_workers=args.num_workers,
     )
     total_loss = 0.
+    total_entropy = 0.
     interval_loss = 0.
+    interval_entropy = 0.
     t = tqdm(data_loader, desc='epoch {:3d}'.format(epoch), dynamic_ncols=True)
     for i_batch, data_item in enumerate(t):
         global_step += 1
@@ -419,12 +433,17 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
         x, y, approx_output = data_item
         batch_size = len(y)
         optimizer.zero_grad()
-        prediction, loss, gt_ce_loss = get_prediction_and_loss(x, y, approx_output, dataset.get_output)
+        prediction, loss, gt_ce_loss, entropies = get_prediction_and_loss(x, y, approx_output, dataset.get_output)
         writer.add_scalar('{}/loss'.format(prefix), loss.item(), global_step)
         if gt_ce_loss is not None:
             writer.add_scalar('{}/gt_ce_loss'.format(prefix), gt_ce_loss.item(), global_step)
         total_loss += loss.item() * batch_size
         interval_loss += loss.item()
+        if entropies is not None:
+            entropy = entropies.sum()
+            total_entropy += entropy.item()
+            writer.add_scalar('{}/entropy'.format(prefix), entropies.mean().item(), global_step)
+            interval_entropy += entropy.item()
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(params, args.clip)
         writer.add_scalar('{}/grad_norm'.format(prefix), grad_norm, global_step)
@@ -433,10 +452,13 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
 
         if (i_batch + 1) % args.log_interval == 0:
             mean_loss = interval_loss / args.log_interval
-            t.set_postfix_str('lr={:05.5f} loss={:.6f}'.format(
+            mean_entropy = interval_entropy / args.log_interval / batch_size
+            t.set_postfix_str('lr={:05.5f} loss={:.6f} ent={:.6f}'.format(
                 optimizer.param_groups[0]['lr'],
-                mean_loss))
+                mean_loss,
+                mean_entropy))
             interval_loss = 0.
+            interval_entropy = 0.
 
         if global_step % args.eval_interval == 0:
             valid_loss = evaluate()
@@ -444,8 +466,9 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
             model.train()
 
     loss = total_loss / len(dataset)
-    print('train loss={:.6f}'.format(
-        loss))
+    entropy = total_entropy / len(dataset)
+    print('train loss={:.6f} entropy={:.6f}'.format(
+        loss, entropy))
 
 # Loop over epochs.
 valid_loss = evaluate()
