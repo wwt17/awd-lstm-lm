@@ -65,8 +65,8 @@ parser.add_argument('--wdrop', type=float, default=0.5,
                     help='amount of weight dropout to apply to the RNN hidden to hidden matrix')
 parser.add_argument('--tied', action='store_false',
                     help='tie the word embedding and softmax weights')
-parser.add_argument('--seed', type=int, default=1111,
-                    help='random seed. default to 1111.')
+parser.add_argument('--seed', type=int, default=None,
+                    help='random seed.')
 parser.add_argument('--nonmono', type=int, default=5,
                     help='nonmono')
 parser.add_argument('--cuda', action='store_false',
@@ -107,13 +107,15 @@ parser.add_argument('--num_workers', type=int, default=12,
 args = parser.parse_args()
 
 # Set the random seed manually for reproducibility.
-np.random.seed(args.seed)
-torch.manual_seed(args.seed)
+if args.seed is not None:
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 if torch.cuda.is_available():
     if not args.cuda:
         print("WARNING: You have a CUDA device, so you should probably run with --cuda")
     else:
-        torch.cuda.manual_seed(args.seed)
+        if args.seed is not None:
+            torch.cuda.manual_seed(args.seed)
 
 ###############################################################################
 # Load data

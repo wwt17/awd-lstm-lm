@@ -31,7 +31,7 @@ parser.add_argument('--approx_model', type=str, default=None,
 # Consistent with Language Modeling code from Merity et al.
 parser.add_argument('--cuda', action='store_false',
                     help='Using this flag turns off CUDA, default value set to True')
-parser.add_argument('--seed', type=int, default=0,
+parser.add_argument('--seed', type=int, default=None,
                     help='random seed')
 parser.add_argument('--logdir', type=str, default='./',
                     help='location to write per token log loss')
@@ -76,13 +76,15 @@ args = parser.parse_args()
 print(args)
 
 # Set the random seed manually for reproducibility.
-np.random.seed(args.seed)
-torch.manual_seed(args.seed)
+if args.seed is not None:
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 if torch.cuda.is_available():
     if not args.cuda:
         print('WARNING: You have a CUDA device, so you should probably run without --cuda')
     else:
-        torch.cuda.manual_seed(args.seed)
+        if args.seed is not None:
+            torch.cuda.manual_seed(args.seed)
 
 if args.checkpoint is not None:
     print('Load model from {}'.format(args.checkpoint))

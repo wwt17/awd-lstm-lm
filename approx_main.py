@@ -85,8 +85,8 @@ parser.add_argument('--config_model', type=str, default='config_GPT2_117M',
                     help='The model configuration file to configure the model.')
 # Training/evaluation/test
 ## Meta
-parser.add_argument('--seed', type=int, default=0,
-                    help='random seed. default to 0.')
+parser.add_argument('--seed', type=int, default=None,
+                    help='random seed.')
 parser.add_argument('--cuda', action='store_false',
                     help='use CUDA')
 parser.add_argument('--num_workers', type=int, default=4,
@@ -144,13 +144,15 @@ for a in required_args:
     assert getattr(args, a) is not None, 'must specify {}'.format(a)
 
 # Set the random seed manually for reproducibility.
-np.random.seed(args.seed)
-torch.manual_seed(args.seed)
+if args.seed is not None:
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
 if torch.cuda.is_available():
     if not args.cuda:
         print("WARNING: You have a CUDA device, so you should probably run with --cuda")
     else:
-        torch.cuda.manual_seed(args.seed)
+        if args.seed is not None:
+            torch.cuda.manual_seed(args.seed)
 
 ###############################################################################
 # Load data
