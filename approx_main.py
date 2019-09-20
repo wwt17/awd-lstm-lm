@@ -46,6 +46,8 @@ parser.add_argument('--approx_logit', action='store_true')
 parser.add_argument('--predict_all_layers', action='store_true')
 parser.add_argument('--predict_c', action='store_true')
 # Model
+parser.add_argument('--new_embedder', action='store_true')
+parser.add_argument('--new_output_layer', action='store_true')
 parser.add_argument('--model_type', type=str, choices=['mlp', 'cnn', 'lstm', 'transformer'], default='lstm',
                     required=True,
                     help='Type of approximator model (mlp, cnn, lstm, transformer)')
@@ -213,6 +215,14 @@ output_size = datasets['train'].target_size
 print('embedding_size={} hidden_size={} output_size={}'.format(
     embedding_size, hidden_size, output_size))
 
+if args.new_embedder:
+    embedder = nn.Embedding(vocab_size, embedding_size)
+if args.new_output_layer:
+    output_layer = nn.Linear(output_size, vocab_size)
+    if args.new_embedder:
+        assert output_size == embedding_size
+        output_layer.weight = embedder.weight
+
 if args.model_type == 'mlp':
     model = approx_models.MLP_Approximator(
         context_size, embedding_size, hidden_size, output_size,
@@ -245,15 +255,22 @@ elif args.model_type == 'transformer':
 criterion = nn.MSELoss()
 if args.cuda:
     model.cuda()
+    embedder.cuda()
+    output_layer.cuda()
     criterion.cuda()
 approx_model.eval()
 if is_GPT2:
     approx_model_fn = get_model_fn(approx_model)
 approx_criterion_fn = get_criterion_fn(approx_model, approx_criterion, is_GPT2)
-params = list(itertools.chain(model.parameters(), criterion.parameters()))
+named_params = list(itertools.chain(model.named_parameters(), criterion.named_parameters()))
+if args.new_embedder:
+    named_params.extend(embedder.named_parameters())
+if args.new_output_layer:
+    named_params.extend(output_layer.named_parameters())
 print('parameters:')
-for name, param in itertools.chain(model.named_parameters(), criterion.named_parameters()):
+for name, param in named_params:
     print('{}:\t{}'.format(name, param.size()))
+params = [param for name, param in named_params]
 total_params = sum(map(torch.Tensor.nelement, params))
 print('Model total parameters:', total_params)
 
@@ -275,14 +292,16 @@ if args.lr is not None:
 global_step = 0
 
 def model_load(path):
-    global model, criterion, optimizer, global_step, lr_scheduler
+    global model, criterion, optimizer, global_step, lr_scheduler, embedder, output_layer
     loaded = torch.load(model_path)
     model, criterion, optimizer, global_step = loaded[:4]
     if len(loaded) > 4:
         lr_scheduler = loaded[4]
+    if len(loaded) > 5:
+        embedder, output_layer = loaded[5:7]
 
 def model_save(path):
-    torch.save((model, criterion, optimizer, global_step, lr_scheduler), path)
+    torch.save((model, criterion, optimizer, global_step, lr_scheduler, embedder, output_layer), path)
 
 os.makedirs(args.ckpt, exist_ok=True)
 model_path = os.path.join(args.ckpt, 'best.pt')
