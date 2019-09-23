@@ -51,6 +51,7 @@ parser.add_argument('--new_output_layer', action='store_true')
 parser.add_argument('--model_type', type=str, choices=['mlp', 'cnn', 'lstm', 'transformer'], default='lstm',
                     required=True,
                     help='Type of approximator model (mlp, cnn, lstm, transformer)')
+parser.add_argument('--copy_w', type=float, default=None)
 ## Shared
 parser.add_argument('--skip_link', type=str, choices=['res'], default=None,
                     help='The type of skip link (res)')
@@ -154,6 +155,8 @@ if torch.cuda.is_available():
         if args.seed is not None:
             torch.cuda.manual_seed(args.seed)
 
+device = torch.device('cuda' if args.cuda else 'cpu')
+
 ###############################################################################
 # Load data
 ###############################################################################
@@ -178,9 +181,8 @@ with open(args.approx_model, 'rb') as f:
 ###
 if not approx_criterion:
     approx_criterion = SplitCrossEntropyLoss(args.emsize, splits=get_splits(vocab_size), verbose=False)
-if args.cuda:
-    approx_model.cuda()
-    approx_criterion.cuda()
+approx_model.to(device)
+approx_criterion.to(device)
 is_GPT2 = isinstance(approx_model, GPT2Decoder)
 # Freeze all parameters of the approximated model, including the embedder and output_layer
 for param in itertools.chain(approx_model.parameters(), approx_criterion.parameters()):
@@ -254,21 +256,31 @@ elif args.model_type == 'transformer':
         hparams=config_model,
         output_size=None if args.no_transform_output else output_size,
     )
+if args.copy_w is not None:
+    copy_w = nn.Parameter(torch.tensor(args.copy_w, requires_grad=True, device=device))
+else:
+    copy_w = None
 criterion = nn.MSELoss()
-if args.cuda:
-    model.cuda()
-    embedder.cuda()
-    output_layer.cuda()
-    criterion.cuda()
+model.to(device)
+embedder.to(device)
+output_layer.to(device)
+criterion.to(device)
 approx_model.eval()
 if is_GPT2:
     approx_model_fn = get_model_fn(approx_model)
 approx_criterion_fn = get_criterion_fn(approx_model, approx_criterion, is_GPT2)
-named_params = list(itertools.chain(model.named_parameters(), criterion.named_parameters()))
-if args.new_embedder:
-    named_params.extend(embedder.named_parameters())
-if args.new_output_layer:
-    named_params.extend(output_layer.named_parameters())
+
+def get_named_params():
+    named_params = list(itertools.chain(model.named_parameters(), criterion.named_parameters()))
+    if args.new_embedder:
+        named_params.extend(embedder.named_parameters())
+    if args.new_output_layer:
+        named_params.extend(output_layer.named_parameters())
+    if copy_w is not None:
+        named_params.append(('copy_w', copy_w))
+    return named_params
+
+named_params = get_named_params()
 print('parameters:')
 for name, param in named_params:
     print('{}:\t{}'.format(name, param.size()))
@@ -294,16 +306,18 @@ if args.lr is not None:
 global_step = 0
 
 def model_load(path):
-    global model, criterion, optimizer, global_step, lr_scheduler, embedder, output_layer
+    global model, criterion, optimizer, global_step, lr_scheduler, embedder, output_layer, copy_w
     loaded = torch.load(model_path)
     model, criterion, optimizer, global_step = loaded[:4]
     if len(loaded) > 4:
         lr_scheduler = loaded[4]
     if len(loaded) > 5:
         embedder, output_layer = loaded[5:7]
+    if len(loaded) > 7:
+        copy_w = loaded[7]
 
 def model_save(path):
-    torch.save((model, criterion, optimizer, global_step, lr_scheduler, embedder, output_layer), path)
+    torch.save((model, criterion, optimizer, global_step, lr_scheduler, embedder, output_layer, copy_w), path)
 
 os.makedirs(args.ckpt, exist_ok=True)
 model_path = os.path.join(args.ckpt, 'best.pt')
@@ -317,7 +331,8 @@ try:
 except FileNotFoundError:
     pass
 
-params = list(itertools.chain(model.parameters(), criterion.parameters()))
+named_params = get_named_params()
+params = [param for name, param in named_params]
 
 ###############################################################################
 # Training code
@@ -328,17 +343,40 @@ writer = SummaryWriter(os.path.join(args.ckpt, 'log'))
 
 def get_prediction_and_loss(x, y, approx_output, get_output):
     input = embedder(x).detach()
-    prediction = model(input)
-    if isinstance(model, (approx_models.LSTM_Approximator, approx_models.Transformer_Approximator)):
-        if args.last_n is None or not model.training:
-            prediction = prediction[:, -1]
-        else:
-            prediction = prediction[:, -args.last_n:]
+    prediction_ = model(input)
+    def get_last_n(t):
+        if isinstance(model, (approx_models.LSTM_Approximator, approx_models.Transformer_Approximator)):
+            if args.last_n is None or not model.training:
+                t = t[:, -1]
+            else:
+                t = t[:, -args.last_n:]
+        return t
+    prediction = get_last_n(prediction_)
     assert not (args.approx_dist and args.approx_logit)
     if args.approx_dist or args.approx_logit:
         logits = output_layer(prediction)
-        p = logits.softmax(-1)
-        log_p = logits.log_softmax(-1)
+
+        if copy_w is not None:
+            seq_len = prediction_.size(1)
+            scores = torch.einsum('bik,bjk->bij', prediction_, prediction_)
+            bias = torch.triu(torch.full([seq_len, seq_len], -1e18, device=device))
+            scores += bias
+            scores = scores.narrow(-1, 0, scores.size(-1) - 1)
+            scores = get_last_n(scores)
+            scores *= copy_w
+            logits_ = torch.cat([logits, scores], -1)
+            p_ = logits_.softmax(-1)
+            p, p_copy_seq = p_.narrow(-1, 0, vocab_size), p_.narrow(-1, vocab_size, scores.size(-1))
+            x_ = x[:, 1:]
+            if p_copy_seq.dim() > 2:
+                x_ = x_.unsqueeze(1).expand_as(p_copy_seq)
+            p = p.scatter_add(-1, x_, p_copy_seq)
+            # TODO: fix NaN or Inf in following two lines
+            log_p = p.log()
+            logits = log_p
+        else:
+            p = logits.softmax(-1)
+            log_p = logits.log_softmax(-1)
         entropies = -(p * log_p).sum(-1)
         teacher_logits = output_layer(get_output(approx_output)).detach()
         if args.approx_logit:
@@ -409,6 +447,8 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
                 total_approxed_loss += approxed_loss * batch_size
                 postfix += ' approxed_ppl={:.3f}'.format(
                     math.exp(total_approxed_loss / n))
+            if copy_w is not None:
+                postfix += ' copy_w={:.3f}'.format(copy_w.item())
             t.set_postfix_str(postfix)
 
     loss = total_loss / len(dataset)
@@ -470,14 +510,17 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
         writer.add_scalar('{}/grad_norm'.format(prefix), grad_norm, global_step)
         optimizer.step()
         writer.add_scalar('{}/lr'.format(prefix), optimizer.param_groups[0]['lr'], global_step)
+        if copy_w is not None:
+            writer.add_scalar('{}/copy_w'.format(prefix), copy_w.item(), global_step)
 
         if (i_batch + 1) % args.log_interval == 0:
             mean_loss = interval_loss / args.log_interval
             mean_entropy = interval_entropy / args.log_interval / batch_size
-            t.set_postfix_str('lr={:05.5f} loss={:.6f} ent={:.6f}'.format(
+            t.set_postfix_str('lr={:05.5f} loss={:.6f} ent={:.6f}{}'.format(
                 optimizer.param_groups[0]['lr'],
                 mean_loss,
-                mean_entropy))
+                mean_entropy,
+                ' copy_w={:.3f}'.format(copy_w.item()) if copy_w is not None else '',))
             interval_loss = 0.
             interval_entropy = 0.
 
