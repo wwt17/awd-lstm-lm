@@ -72,6 +72,21 @@ def read_file(fname):
             items.append(item)
     return Result(fname, *items)
 
+def split_pos_seq(ptarget_token_ids, id_to_token_map_py):
+    def split_pos_token_id(ptarget_token_id):
+        ptarget_token = id_to_token_map_py[int(ptarget_token_id)]
+        if ptarget_token in ['<pad>', '<bos>', '<eos>', '<unk>']:
+            w, p = ptarget_token, ptarget_token
+        else:
+            try:
+                w, p = ptarget_token.split('_')
+            except:
+                print('ptaraget_token: {}'.format(ptarget_token))
+                raise
+        return w, p
+
+    return list(map(split_pos_token_id, ptarget_token_ids))
+
 if __name__ == '__main__':
     _input = input
     argparser = argparse.ArgumentParser()
@@ -105,7 +120,7 @@ if __name__ == '__main__':
             else:
                 stage = None
             stages.append(stage)
-        seq = getattr(corpus, stage)
+        seq = split_pos_seq(getattr(corpus, stage), id_to_token_map_py)
         all_res = defaultdict(lambda: defaultdict(dict))
         cnt_pos = {}
         for result in results:
@@ -114,17 +129,8 @@ if __name__ == '__main__':
             context_size = int(result.name.split('.')[-1])
             pos_stat = {}
             total_loss = 0.
-            for i, ptarget_token_id in enumerate(seq[-result.n:]):
+            for i, (w, p) in enumerate(seq[-result.n:]):
                 item = result.geti(i)
-                ptarget_token = id_to_token_map_py[int(ptarget_token_id)]
-                if ptarget_token in ['<pad>', '<bos>', '<eos>', '<unk>']:
-                    w, p = ptarget_token, ptarget_token
-                else:
-                    try:
-                        w, p = ptarget_token.split('_')
-                    except:
-                        print('ptaraget_token: {}'.format(ptarget_token))
-                        raise
                 if p not in pos_stat:
                     pos_stat[p] = []
                 pos_stat[p].append(item)
