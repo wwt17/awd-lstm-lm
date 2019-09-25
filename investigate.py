@@ -62,6 +62,7 @@ def mean(a):
     return sum(a) / len(a)
 
 def read_file(fname):
+    print('reading {}'.format(fname))
     with open(fname, 'rb') as f:
         items = []
         while True:
@@ -90,7 +91,7 @@ def split_pos_seq(ptarget_token_ids, id_to_token_map_py):
 if __name__ == '__main__':
     _input = input
     argparser = argparse.ArgumentParser()
-    argparser.add_argument('op', type=str, choices=['pos_analysis', 'plot', 'plot_loss', 'plot_sorted', 'view', 'compare', 'compare_inverse'])
+    argparser.add_argument('op', type=str, choices=['pos_analysis', 'plot', 'plot_loss', 'view', 'compare', 'compare_inverse'])
     argparser.add_argument('files', type=str, nargs='+')
     argparser.add_argument('--data', type=str, default='data/wikitext-103')
     argparser.add_argument('--pos_data', type=str, default='data/wikitext-103_pos')
@@ -101,139 +102,163 @@ if __name__ == '__main__':
     argparser.add_argument('--reverse', action='store_false')
     argparser.add_argument('--gap', type=float, default=-math.inf)
     argparser.add_argument('--relative', action='store_true')
-    argparser.add_argument('--plot_sample_gap', type=int, default=1)
-    argparser.add_argument('--savefig', type=str)
+    argparser.add_argument('--plot', nargs='+', choices=['sorted', 'pdf', 'cdf'], default=[])
+    argparser.add_argument('--plot_sample_gap', type=int, nargs='+', default=None)
+    argparser.add_argument('--n_bins', type=int, default=100)
+    argparser.add_argument('--scatter_size', type=float, default=.01)
+    argparser.add_argument('--fig_size', type=float, nargs=2, default=None)
+    argparser.add_argument('--save_fig', type=str)
     args = argparser.parse_args()
 
     results = list(map(read_file, args.files))
+    if args.plot_sample_gap is not None:
+        assert len(results) == len(args.plot_sample_gap)
+    else:
+        args.plot_sample_gap = [1] * len(results)
     n = results[0].n
-    assert all(result.n == n for result in results), ' '.join(str(result.n) for result in results)
+    assert all(result.n == n for result in results), '\n'.join('{}:\t{}'.format(result.name, result.n) for result in results)
 
-    if args.op == 'pos_analysis':
-        corpus = data.prepare_corpus(args.pos_data)
-        id_to_token_map_py = corpus.vocab.id_to_token_map_py
-        stages = []
-        for result in results:
-            for stage in ['valid', 'test']:
-                if stage in result.name:
-                    break
-            else:
-                stage = None
-            stages.append(stage)
-        seq = split_pos_seq(getattr(corpus, stage), id_to_token_map_py)
-        all_res = defaultdict(lambda: defaultdict(dict))
-        cnt_pos = {}
-        for result in results:
-            print('{}:'.format(result.name))
-            dir_name = os.path.basename(os.path.dirname(result.name))
-            context_size = int(result.name.split('.')[-1])
-            pos_stat = {}
-            total_loss = 0.
-            for i, (w, p) in enumerate(seq[-result.n:]):
-                item = result.geti(i)
-                if p not in pos_stat:
-                    pos_stat[p] = []
-                pos_stat[p].append(item)
-                total_loss += item.loss
-            mean_loss = total_loss / result.n
-            res = []
-            for p, stat in sorted(list(pos_stat.items()), key=lambda x: len(x[1]), reverse=True):
-                N = len(stat)
-                sum_loss, sum_entropy = map(sum, list(zip(*stat))[:2])
-                loss, entropy = sum_loss / N, sum_entropy / N
-                res.append((p, N, sum_loss - mean_loss * N, loss, math.exp(loss), entropy))
-            res.sort(key=lambda x: x[2])
-            for r in res:
-                print('POS: {:<5s} N: {:>6d} weight: {:>10.3f} loss: {:>6.3f} ppl: {:>8.3f} entropy: {:>6.3f}'.format(*r))
-                pos = r[0]
-                cnt_pos[pos] = r[1]
-                all_res[pos][dir_name][context_size] = (r[3], r[5])
-        import matplotlib.pyplot as plt
-        import matplotlib
-        matplotlib.use('agg')
-        plt.title('Different POS loss')
-        context_limits = Limits(0)
-        loss_limits = Limits()
-        pos_cnt = 0
-        colors = ['black', 'purple', 'blue', 'cyan', 'green', 'yellow', 'darkorange', 'red', 'magenta', 'brown']
-        linestyles = ['-', '--', '-.', ':']
-        all_dir_names = {}
-        for pos, pos_content in all_res.items():
-            if cnt_pos[pos] >= 8000:
-                for dir_name, a in sorted(list(pos_content.items())):
-                    if dir_name not in all_dir_names:
-                        all_dir_names[dir_name] = len(all_dir_names)
-                    a = list(a.items())
-                    a.sort(key=lambda x: x[0])
-                    context_sizes, items = zip(*a)
-                    losses, entropies = zip(*items)
-                    y = [loss - losses[-1] for loss in losses] if args.relative else losses
-                    loss_limits.update(y)
-                    context_limits.update(context_sizes)
-                    plt.plot(context_sizes, y, label='{}/{}'.format(dir_name, pos), color=colors[pos_cnt], linestyle=linestyles[all_dir_names[dir_name]])
-                pos_cnt += 1
-        plt.xlim(context_limits.l, context_limits.h)
-        plt.ylim(loss_limits.l, loss_limits.h)
-        plt.gcf().set_size_inches(18.5, 10.5)
-        plt.legend()
-        if args.savefig is not None:
-            plt.savefig(args.savefig)
+    stages = []
+    for result in results:
+        for stage in ['train', 'valid', 'test']:
+            if stage in result.name:
+                break
         else:
-            plt.show()
-    elif args.op.startswith('plot'):
+            stage = None
+        stages.append(stage)
+
+    if args.op == 'pos_analysis' or args.op.startswith('plot'):
         import matplotlib.pyplot as plt
         import matplotlib
         matplotlib.use('agg')
-        if args.op == 'plot':
+
+        if args.op == 'pos_analysis':
+            corpus = data.prepare_corpus(args.pos_data)
+            id_to_token_map_py = corpus.vocab.id_to_token_map_py
+            seq = split_pos_seq(getattr(corpus, stage), id_to_token_map_py)
+            all_res = defaultdict(lambda: defaultdict(dict))
+            cnt_pos = {}
+            for result in results:
+                print('{}:'.format(result.name))
+                dir_name = os.path.basename(os.path.dirname(result.name))
+                context_size = int(result.name.split('.')[-1])
+                pos_stat = defaultdict(list)
+                total_loss = 0.
+                for i, (w, p) in enumerate(seq[-result.n:]):
+                    item = result.geti(i)
+                    pos_stat[p].append(item)
+                    total_loss += item.loss
+                mean_loss = total_loss / result.n
+                res = []
+                for p, stat in pos_stat.items():
+                    N = len(stat)
+                    sum_loss, sum_entropy = map(sum, list(zip(*stat))[:2])
+                    loss, entropy = sum_loss / N, sum_entropy / N
+                    res.append((p, N, sum_loss - mean_loss * N, loss, entropy))
+                res.sort(key=lambda x: x[2])
+                for r in res:
+                    pos, N, weight, loss, entropy = r
+                    print('POS: {:<5s} N: {:>6d} weight: {:>10.3f} loss: {:>6.3f} ppl: {:>8.3f} entropy: {:>6.3f}'.format(
+                        pos, N, weight, loss, math.exp(loss), entropy))
+                    cnt_pos[pos] = N
+                    all_res[pos][dir_name][context_size] = (loss, entropy)
+            plt.title('Different POS loss')
+            plt.xlabel('context size')
+            plt.ylabel('loss')
+            context_limits = Limits(0)
+            loss_limits = Limits()
+            pos_cnt = 0
+            colors = ['black', 'purple', 'blue', 'cyan', 'green', 'yellow', 'darkorange', 'red', 'magenta', 'brown']
+            linestyles = ['-', '--', '-.', ':']
+            all_dir_names = {}
+            for pos, pos_content in all_res.items():
+                if cnt_pos[pos] >= 8000:
+                    for dir_name, a in sorted(list(pos_content.items())):
+                        if dir_name not in all_dir_names:
+                            all_dir_names[dir_name] = len(all_dir_names)
+                        a = list(a.items())
+                        a.sort(key=lambda x: x[0])
+                        context_sizes, items = zip(*a)
+                        losses, entropies = zip(*items)
+                        y = [loss - losses[-1] for loss in losses] if args.relative else losses
+                        loss_limits.update(y)
+                        context_limits.update(context_sizes)
+                        plt.plot(context_sizes, y, label='{}/{}'.format(dir_name, pos), color=colors[pos_cnt], linestyle=linestyles[all_dir_names[dir_name]])
+                    pos_cnt += 1
+            plt.xlim(context_limits.l, context_limits.h)
+            plt.ylim(loss_limits.l, loss_limits.h)
+            plt.legend()
+
+        elif args.op == 'plot':
+            ax_rows = len(results)
+            ax_columns = 1 + 2 * len(args.plot)
+            ax_id = 0
+
             for result_i, result in enumerate(results):
-                ax = plt.subplot(len(results), 1, result_i + 1)
+                sample_gap = args.plot_sample_gap[result_i]
+                def gap_sample(a):
+                    return a[::sample_gap]
+
+                ax_id += 1
+                ax = plt.subplot(ax_rows, ax_columns, ax_id)
                 ax.set_title(result.name)
-                ax.scatter(result.all_losses, result.all_entropies, s=.01)
-                ax.xlim(0, 20)
-                ax.ylim(0, 8.5)
+                ax.set_xlabel('loss')
+                ax.set_ylabel('entropy')
+                ax.scatter(*map(gap_sample, (result.all_losses, result.all_entropies)), s=args.scatter_size)
+                ax.set_xlim(0, 20)
+                ax.set_ylim(0, 8.5)
+
+                for attr, y in (('loss', result.all_losses), ('entropy', result.all_entropies)):
+                    for plot_type in args.plot:
+                        title = '{} {}'.format(attr, plot_type)
+                        print('plotting {}'.format(title))
+                        ax_id += 1
+                        ax = plt.subplot(ax_rows, ax_columns, ax_id)
+                        ax.set_title(title)
+
+                        if plot_type == 'sorted':
+                            ax.set_xlabel('example')
+                            ax.set_ylabel(attr)
+                            x = np.arange(result.n)
+                            ax.bar(*map(gap_sample, (x, sorted(y))), width=sample_gap, align='edge')
+                            ax.set_xlim(0, result.n)
+
+                        elif plot_type in ['pdf', 'cdf']:
+                            ax.set_xlabel(attr)
+                            ax.set_ylabel('example #')
+                            ax.hist(y, bins=args.n_bins, cumulative=(plot_type == 'cdf'))
+
+                        else:
+                            raise NotImplementedError(plot_type)
+
         elif args.op == 'plot_loss':
             assert len(results) == 2
             plt.title('{} vs. {}'.format(results[0].name, results[1].name))
-            plt.scatter(results[0].all_losses, results[1].all_losses, s=.01)
-        elif args.op == 'plot_sorted':
-            for result_i, result in enumerate(results):
-                title = '{} loss'.format(result.name)
-                x = np.arange(result.n)
-                print('plotting {}'.format(title))
-                ax = plt.subplot(len(results) * 2, 1, result_i * 2 + 1)
-                ax.set_title(title)
-                y = sorted(result.all_losses)
-                ax.bar(x[::args.plot_sample_gap], y[::args.plot_sample_gap], width=args.plot_sample_gap, align='edge')
-                ax.set_xlim(0, result.n)
-                title = '{} entropy'.format(result.name)
-                print('plotting {}'.format(title))
-                ax = plt.subplot(len(results) * 2, 1, result_i * 2 + 2)
-                ax.set_title(title)
-                y = sorted(result.all_entropies)
-                ax.bar(x[::args.plot_sample_gap], y[::args.plot_sample_gap], width=args.plot_sample_gap, align='edge')
-                ax.set_xlim(0, result.n)
+            plt.xlabel('{} loss'.format(results[0].name))
+            plt.ylabel('{} loss'.format(results[1].name))
+            plt.scatter(results[0].all_losses, results[1].all_losses, s=args.scatter_size)
+
         else:
             raise NotImplementedError('Ignored op {}'.format(args.op))
-        if args.savefig is not None:
-            plt.savefig(args.savefig)
+
+        fig = plt.gcf()
+        if args.fig_size is not None:
+            fig.set_size_inches(*args.fig_size)
+
+        if args.save_fig is not None:
+            plt.savefig(args.save_fig)
         else:
             plt.show()
+
     elif args.op.startswith('compare') or args.op.startswith('view'):
         context_sizes = args.context_sizes
         context_sizes.sort(reverse=True)
         corpus = data.prepare_corpus(args.data)
         id_to_token_map_py = corpus.vocab.id_to_token_map_py
-        stages = []
-        for result in results:
-            for stage in ['valid', 'test']:
-                if stage in result.name:
-                    break
-            else:
-                stage = None
-            stages.append(stage)
         seq = getattr(corpus, stage)
         dataset = FixedLengthContextDataset(seq[args.max_seq_len - args.seq_len :], args.seq_len)
         # assert len(dataset) == n, 'len(dataset)={} n={}'.format(len(dataset), n)
+
         if args.op == 'compare_inverse':
             indices = []
             for i in range(n):
@@ -243,24 +268,30 @@ if __name__ == '__main__':
                 a, b = results[0].geti(i), results[1].geti(i)
                 return abs(a.entropy - b.entropy) + 0.2 * abs(a.loss - b.loss)
             key = inversed_value
+
         elif args.op == 'compare':
             def better_value(i):
                 a, b = results[0].geti(i), results[1].geti(i)
                 return a.loss - b.loss
             indices = list(filter(lambda i: better_value(i) > args.gap, range(n)))
             key = better_value
+
         elif args.op == 'view':
             key = lambda i: i
             indices = list(range(n))
+
         else:
             raise NotImplementedError('Ignored op {}'.format(args.op))
+
         if args.random:
             random.shuffle(indices)
         else:
             indices.sort(key=key, reverse=args.reverse)
+
         if len(results) >= 2:
             n_loss_leq = len(list(filter(lambda i: results[0].geti(i).loss <= results[1].geti(i).loss, indices)))
             print('total: {} | #(a.loss <= b.loss): {} | #(a.loss > b.loss): {}'.format(len(indices), n_loss_leq, len(indices) - n_loss_leq))
+
         for I in indices:
             input, target = dataset[I]
             input, target = (x.tolist() for x in (input, target))
@@ -278,5 +309,6 @@ if __name__ == '__main__':
             for result in results:
                 print(result.geti(I))
             _input()
+
     else:
         raise NotImplementedError('Ignored op {}'.format(args.op))
