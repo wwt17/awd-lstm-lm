@@ -17,7 +17,7 @@ from data import HiddenStateDataset
 import model
 import approx_models
 
-from utils import map_structure, get_config_model, get_splits, get_embedder, get_embedding_size, get_output_layer, get_model_fn, get_criterion_fn, force_reduce_lr, set_lr
+from utils import map_structure, get_config_model, get_splits, get_embedder, get_embedding_size, get_output_layer, get_criterion_fn, force_reduce_lr, set_lr
 from gpt2_decoder import GPT2Decoder
 
 def arg_to_list(t):
@@ -33,7 +33,7 @@ parser.add_argument('--data', type=str, default='data/wikitext-103',
                     help='location of the data corpus')
 parser.add_argument('--output_hidden_path', type=str, default='output_hidden/WT103.GPT2.512.6/512_32',
                     help='path of saved output and hidden states')
-parser.add_argument('--approx_model', type=str, default='WT103.GPT2.512.6.5e0.pt',
+parser.add_argument('--teacher_model', type=str, default='WT103.GPT2.512.6.5e0.pt',
                     help='path of model to approxiate')
 parser.add_argument('--ckpt', type=str,  default='',
                     help='path of model to save and resume')
@@ -130,7 +130,7 @@ parser.add_argument('--output_dropout', type=float, default=0.,
 parser.add_argument('--weight_dropout', type=float, default=0.,
                     help='amount of weight dropout to apply to the hidden matrices')
 # Logging/save
-parser.add_argument('--eval_approxed_loss', action='store_true',
+parser.add_argument('--eval_teacher_loss', action='store_true',
                     help='whether to evaluate the loss of the approximated model')
 parser.add_argument('--save_intermediate', action='store_true',
                     help='whether to save intermediate results besides the best one')
@@ -166,26 +166,25 @@ corpus = data.prepare_corpus(args.data)
 context_size = args.context_size
 
 ###############################################################################
-# Load model
+# Load approximated model
 ###############################################################################
 
 from splitcross import SplitCrossEntropyLoss
-approx_criterion = None
 
 vocab_size = corpus.vocab.size
 print('vocab_size = {}'.format(vocab_size))
 ###
 print('Loading approximated model ...')
-with open(args.approx_model, 'rb') as f:
-    approx_model, approx_criterion, _ = torch.load(f)
+with open(args.teacher_model, 'rb') as f:
+    teacher_model, teacher_criterion, _ = torch.load(f)
 ###
-if not approx_criterion:
-    approx_criterion = SplitCrossEntropyLoss(args.emsize, splits=get_splits(vocab_size), verbose=False)
-approx_model.to(device)
-approx_criterion.to(device)
-is_GPT2 = isinstance(approx_model, GPT2Decoder)
+if teacher_criterion is None:
+    teacher_criterion = SplitCrossEntropyLoss(args.emsize, splits=get_splits(vocab_size), verbose=False)
+teacher_model.to(device)
+teacher_criterion.to(device)
+is_GPT2 = isinstance(teacher_model, GPT2Decoder)
 # Freeze all parameters of the approximated model, including the embedder and output_layer
-for param in itertools.chain(approx_model.parameters(), approx_criterion.parameters()):
+for param in itertools.chain(teacher_model.parameters(), teacher_criterion.parameters()):
     param.requires_grad = False
 
 ###############################################################################
@@ -209,8 +208,32 @@ datasets = {
 # Build the model
 ###############################################################################
 
-embedder = get_embedder(approx_model, is_GPT2)
-output_layer = get_output_layer(approx_model, is_GPT2)
+def model_load(path):
+    global model, criterion, optimizer, global_step, lr_scheduler, embedder, output_layer, copy_w
+    try:
+        loaded = torch.load(model_path)
+    except FileNotFoundError:
+        loaded = []
+        success = False
+    else:
+        success = True
+        print('use checkpoint {}'.format(model_path))
+    loaded += (None,) * (8 - len(loaded))
+    model, criterion, optimizer, global_step, lr_scheduler, embedder, output_layer, copy_w = loaded
+    return success
+
+def model_save(path):
+    torch.save((model, criterion, optimizer, global_step, lr_scheduler, embedder, output_layer, copy_w), path)
+
+os.makedirs(args.ckpt, exist_ok=True)
+model_path = os.path.join(args.ckpt, 'best.pt')
+
+model_load(model_path)
+
+if embedder is None:
+    embedder = get_embedder(teacher_model, is_GPT2)
+if output_layer is None:
+    output_layer = get_output_layer(teacher_model, is_GPT2)
 
 embedding_size = get_embedding_size(embedder, is_GPT2)
 hidden_size = args.hidden_size
@@ -219,56 +242,55 @@ output_size = datasets['train'].target_size
 print('embedding_size={} hidden_size={} output_size={}'.format(
     embedding_size, hidden_size, output_size))
 
-if args.new_embedder:
+if embedder is None and args.new_embedder:
     embedder = nn.Embedding(vocab_size, embedding_size)
-if args.new_output_layer:
+if output_layer is None and args.new_output_layer:
     output_layer = nn.Linear(output_size, vocab_size)
     if args.new_embedder:
         assert output_size == embedding_size
         output_layer.weight = embedder.weight
 
-if args.model_type == 'mlp':
-    model = approx_models.MLP_Approximator(
-        context_size, embedding_size, hidden_size, output_size,
-        args.input_dropout, args.hidden_dropout, args.output_dropout,
-        args.weight_dropout)
-elif args.model_type == 'cnn':
-    model = approx_models.CNN_Approximator(
-        context_size, embedding_size, args.n_layers, args.channels,
-        args.kernel_size, output_size, variational=args.variational,
-        padding=args.padding, skip_link=args.skip_link,
-        output_layer_type=args.output_layer_type,
-        input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
-        output_dropout=args.output_dropout)
-elif args.model_type == 'lstm':
-    model = approx_models.LSTM_Approximator(
-        embedding_size, hidden_size, args.n_layers,
-        explicit_stack=args.explicit_stack,
-        skip_link=args.skip_link,
-        normalization=args.normalization,
-        input_transform=args.input_transform,
-        output_size=None if args.no_transform_output else output_size,
-        input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
-        output_dropout=args.output_dropout)
-elif args.model_type == 'transformer':
-    config_model = get_config_model(args.config_model, vocab_size)
-    model = approx_models.Transformer_Approximator(
-        hparams=config_model,
-        output_size=None if args.no_transform_output else output_size,
-    )
-if args.copy_w is not None:
+if model is None:
+    if args.model_type == 'mlp':
+        model = approx_models.MLP_Approximator(
+            context_size, embedding_size, hidden_size, output_size,
+            args.input_dropout, args.hidden_dropout, args.output_dropout,
+            args.weight_dropout)
+    elif args.model_type == 'cnn':
+        model = approx_models.CNN_Approximator(
+            context_size, embedding_size, args.n_layers, args.channels,
+            args.kernel_size, output_size, variational=args.variational,
+            padding=args.padding, skip_link=args.skip_link,
+            output_layer_type=args.output_layer_type,
+            input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
+            output_dropout=args.output_dropout)
+    elif args.model_type == 'lstm':
+        model = approx_models.LSTM_Approximator(
+            embedding_size, hidden_size, args.n_layers,
+            explicit_stack=args.explicit_stack,
+            skip_link=args.skip_link,
+            normalization=args.normalization,
+            input_transform=args.input_transform,
+            output_size=None if args.no_transform_output else output_size,
+            input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
+            output_dropout=args.output_dropout)
+    elif args.model_type == 'transformer':
+        config_model = get_config_model(args.config_model, vocab_size)
+        model = approx_models.Transformer_Approximator(
+            hparams=config_model,
+            output_size=None if args.no_transform_output else output_size,
+        )
+
+if copy_w is None and args.copy_w is not None:
     copy_w = nn.Parameter(torch.tensor(args.copy_w, requires_grad=True, device=device))
-else:
-    copy_w = None
+
 criterion = nn.MSELoss()
 model.to(device)
 embedder.to(device)
 output_layer.to(device)
 criterion.to(device)
-approx_model.eval()
-if is_GPT2:
-    approx_model_fn = get_model_fn(approx_model)
-approx_criterion_fn = get_criterion_fn(approx_model, approx_criterion, is_GPT2)
+teacher_criterion_fn = get_criterion_fn(teacher_model, teacher_criterion, is_GPT2)
+del teacher_model
 
 def get_named_params():
     named_params = list(itertools.chain(model.named_parameters(), criterion.named_parameters()))
@@ -286,9 +308,15 @@ for name, param in named_params:
     print('{}:\t{}'.format(name, param.size()))
 params = [param for name, param in named_params]
 total_params = sum(map(torch.Tensor.nelement, params))
-print('Model total parameters:', total_params)
+print('Model total # parameters:', total_params)
 
-if args.lr is not None:
+if lr_scheduler is not None:
+    if args.lr is not None:
+        set_lr(lr_scheduler, args.lr)
+    elif args.force_reduce_lr:
+        force_reduce_lr(lr_scheduler)
+
+if optimizer is None and args.lr is not None:
     if args.optimizer == 'sgd':
         optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
     elif args.optimizer == 'adam':
@@ -303,36 +331,8 @@ if args.lr is not None:
         min_lr=args.reduce_lr_min_lr,
     )
 
-global_step = 0
-
-def model_load(path):
-    global model, criterion, optimizer, global_step, lr_scheduler, embedder, output_layer, copy_w
-    loaded = torch.load(model_path)
-    model, criterion, optimizer, global_step = loaded[:4]
-    if len(loaded) > 4:
-        lr_scheduler = loaded[4]
-    if len(loaded) > 5:
-        embedder, output_layer = loaded[5:7]
-    if len(loaded) > 7:
-        copy_w = loaded[7]
-
-def model_save(path):
-    torch.save((model, criterion, optimizer, global_step, lr_scheduler, embedder, output_layer, copy_w), path)
-
-os.makedirs(args.ckpt, exist_ok=True)
-model_path = os.path.join(args.ckpt, 'best.pt')
-
-try:
-    model_load(model_path)
-    if args.lr is not None:
-        set_lr(lr_scheduler, args.lr)
-    elif args.force_reduce_lr:
-        force_reduce_lr(lr_scheduler)
-except FileNotFoundError:
-    pass
-
-named_params = get_named_params()
-params = [param for name, param in named_params]
+if global_step is None:
+    global_step = 0
 
 ###############################################################################
 # Training code
@@ -341,7 +341,7 @@ params = [param for name, param in named_params]
 writer = SummaryWriter(os.path.join(args.ckpt, 'log'))
 
 
-def get_prediction_and_loss(x, y, approx_output, get_output):
+def get_prediction_and_loss(x, y, teacher_output, get_output):
     input = embedder(x).detach()
     prediction_ = model(input)
     def get_last_n(t):
@@ -378,7 +378,7 @@ def get_prediction_and_loss(x, y, approx_output, get_output):
             p = logits.softmax(-1)
             log_p = logits.log_softmax(-1)
         entropies = -(p * log_p).sum(-1)
-        teacher_logits = output_layer(get_output(approx_output)).detach()
+        teacher_logits = output_layer(get_output(teacher_output)).detach()
         if args.approx_logit:
             loss = F.mse_loss(logits, teacher_logits)
             gt_ce_loss = None
@@ -394,7 +394,7 @@ def get_prediction_and_loss(x, y, approx_output, get_output):
             gt_ce_loss = F.cross_entropy(logits.permute(*([0, logits_dim - 1] + list(range(1, logits_dim - 1)))), y)
             loss = ((L * T * T) * kl_loss if L > 0. else 0.) + (1. - L) * gt_ce_loss
     else:
-        loss = criterion(prediction, approx_output)
+        loss = criterion(prediction, teacher_output)
         gt_ce_loss, entropies = None, None
     return prediction, loss, gt_ce_loss, entropies
 
@@ -414,8 +414,8 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
     total_loss = 0.
     total_entropy = 0.
     total_approx_loss = 0.
-    if args.eval_approxed_loss:
-        total_approxed_loss = 0.
+    if args.eval_teacher_loss:
+        total_teacher_loss = 0.
     with torch.no_grad():
         t = tqdm(data_loader, desc=prefix, dynamic_ncols=True)
         n = 0
@@ -424,10 +424,10 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
                 data_item = map_structure(
                     lambda t: t.to('cuda', non_blocking=True),
                     data_item)
-            x, y, approx_output = data_item
+            x, y, teacher_output = data_item
             batch_size = len(y)
             n += batch_size
-            prediction, loss, gt_ce_loss, entropies = get_prediction_and_loss(x, y, approx_output, dataset.get_output)
+            prediction, loss, gt_ce_loss, entropies = get_prediction_and_loss(x, y, teacher_output, dataset.get_output)
             total_loss += loss.item() * batch_size
             if entropies is not None:
                 total_entropy += entropies.sum().item()
@@ -435,18 +435,18 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
                 approx_loss = gt_ce_loss
             else:
                 output = dataset.get_output(prediction)
-                approx_loss = approx_criterion_fn(output, y)
+                approx_loss = teacher_criterion_fn(output, y)
             total_approx_loss += approx_loss.item() * batch_size
             postfix = 'ppl={:.3f}'.format(
                 math.exp(total_approx_loss / n))
             if entropies is not None:
                 postfix += ' ent={:.3f}'.format(
                     total_entropy / n)
-            if args.eval_approxed_loss:
-                approxed_loss = approx_criterion_fn(dataset.get_output(approx_output), y)
-                total_approxed_loss += approxed_loss * batch_size
-                postfix += ' approxed_ppl={:.3f}'.format(
-                    math.exp(total_approxed_loss / n))
+            if args.eval_teacher_loss:
+                teacher_loss = teacher_criterion_fn(dataset.get_output(teacher_output), y)
+                total_teacher_loss += teacher_loss * batch_size
+                postfix += ' teacher_ppl={:.3f}'.format(
+                    math.exp(total_teacher_loss / n))
             if copy_w is not None:
                 postfix += ' copy_w={:.3f}'.format(copy_w.item())
             t.set_postfix_str(postfix)
@@ -491,10 +491,10 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
             data_item = map_structure(
                 lambda t: t.to('cuda', non_blocking=True),
                 data_item)
-        x, y, approx_output = data_item
+        x, y, teacher_output = data_item
         batch_size = len(y)
         optimizer.zero_grad()
-        prediction, loss, gt_ce_loss, entropies = get_prediction_and_loss(x, y, approx_output, dataset.get_output)
+        prediction, loss, gt_ce_loss, entropies = get_prediction_and_loss(x, y, teacher_output, dataset.get_output)
         writer.add_scalar('{}/loss'.format(prefix), loss.item(), global_step)
         if gt_ce_loss is not None:
             writer.add_scalar('{}/gt_ce_loss'.format(prefix), gt_ce_loss.item(), global_step)
@@ -534,10 +534,6 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
     print('train loss={:.6f} entropy={:.6f}'.format(
         loss, entropy))
 
-# Loop over epochs.
-valid_loss = evaluate()
-best_valid_loss, _ = valid_loss
-
 def update_valid_loss(valid_loss):
     valid_loss, valid_approx_loss = valid_loss
     global best_valid_loss
@@ -549,8 +545,12 @@ def update_valid_loss(valid_loss):
         best_valid_loss = valid_loss
     lr_scheduler.step(valid_loss)
 
+# Loop over epochs.
 # At any point you can hit Ctrl + C to break out of training early.
 try:
+    valid_loss = evaluate()
+    best_valid_loss, _ = valid_loss
+
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
         train()
@@ -561,7 +561,9 @@ except KeyboardInterrupt:
     print('Exiting from training early')
 
 # Load the best saved model.
-model_load(os.path.join(args.ckpt, 'best.pt'))
+best_model_path = os.path.join(args.ckpt, 'best.pt')
+if not model_load(best_model_path):
+    raise Exception('{} is not found'.format(best_model_path))
 
 # Run on test data.
 test_loss = evaluate(datasets['test'], args.test_batch_size, prefix='test')
