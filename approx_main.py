@@ -53,6 +53,7 @@ parser.add_argument('--model_type', type=str, choices=['mlp', 'cnn', 'lstm', 'tr
                     help='Type of approximator model (mlp, cnn, lstm, transformer)')
 parser.add_argument('--copy_w', type=float, default=None)
 ## Shared
+parser.add_argument('--output_seq', action='store_false')
 parser.add_argument('--skip_link', type=str, choices=['res'], default=None,
                     help='The type of skip link (res)')
 parser.add_argument('--normalization', type=str, choices=['layer'], default=None,
@@ -79,6 +80,7 @@ parser.add_argument('--padding', action='store_false',
 parser.add_argument('--output_layer_type', type=str, choices=['fc'], default='fc',
                     help='type of CNN output layer')
 ## LSTM
+parser.add_argument('--bidirectional', action='store_true')
 parser.add_argument('--explicit_stack', action='store_true')
 parser.add_argument('--no_transform_output', action='store_true')
 ## Transformer
@@ -267,6 +269,8 @@ if model is None:
     elif args.model_type == 'lstm':
         model = approx_models.LSTM_Approximator(
             embedding_size, hidden_size, args.n_layers,
+            output_seq=args.output_seq,
+            bidirectional=args.bidirectional,
             explicit_stack=args.explicit_stack,
             skip_link=args.skip_link,
             normalization=args.normalization,
@@ -345,7 +349,7 @@ def get_prediction_and_loss(x, y, teacher_output, get_output):
     input = embedder(x).detach()
     prediction_ = model(input)
     def get_last_n(t):
-        if isinstance(model, (approx_models.LSTM_Approximator, approx_models.Transformer_Approximator)):
+        if isinstance(model, (approx_models.LSTM_Approximator, approx_models.Transformer_Approximator)) and args.output_seq:
             if args.last_n is None or not model.training:
                 t = t[:, -1]
             else:
@@ -390,7 +394,7 @@ def get_prediction_and_loss(x, y, teacher_output, get_output):
                 for d in logits.shape[1:-1]:
                     s *= d
                 kl_loss = F.kl_div((logits / T).log_softmax(-1), (teacher_logits / T).softmax(-1), reduction='batchmean') / s
-            logits_dim = len(logits.shape)
+            logits_dim = logits.dim()
             gt_ce_loss = F.cross_entropy(logits.permute(*([0, logits_dim - 1] + list(range(1, logits_dim - 1)))), y)
             loss = ((L * T * T) * kl_loss if L > 0. else 0.) + (1. - L) * gt_ce_loss
     else:

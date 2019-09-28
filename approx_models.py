@@ -133,13 +133,18 @@ class CNN_Approximator(nn.Module):
 
 class LSTM_Approximator(nn.Module):
     def __init__(
-            self, input_size, hidden_size, n_layers, explicit_stack=False, skip_link=None, normalization=None,
+            self, input_size, hidden_size, n_layers,
+            output_seq=False, bidirectional=False,
+            explicit_stack=False, skip_link=None, normalization=None,
             output_size=None, input_transform=False,
             input_dropout=0., hidden_dropout=0., output_dropout=0.):
         super(LSTM_Approximator, self).__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.n_layers = n_layers
+        self.output_seq = output_seq
+        self.bidirectional = bidirectional
+        self.num_directions = 2 if self.bidirectional else 1
         self.skip_link = skip_link
         if skip_link:
             assert explicit_stack
@@ -147,6 +152,7 @@ class LSTM_Approximator(nn.Module):
         self.input_transform = input_transform
         self.output_size = output_size if output_size is not None else hidden_size
         if explicit_stack:
+            assert not self.bidirectional # TODO: support bidirectional
             assert self.skip_link is None or input_size == hidden_size or self.input_transform
             self.lstm = [nn.LSTM(input_size if l == 0 and not self.input_transform else hidden_size, hidden_size, batch_first=True) for l in range(n_layers)]
             self.lstm = nn.ModuleList(self.lstm)
@@ -155,19 +161,19 @@ class LSTM_Approximator(nn.Module):
                 self.normalizations = nn.ModuleList(self.normalizations)
             self.hidden_dropout = VariationalDropout(hidden_dropout) if hidden_dropout else None
         else:
-            self.lstm = nn.LSTM(input_size, hidden_size, n_layers, dropout=hidden_dropout, batch_first=True)
+            self.lstm = nn.LSTM(input_size, hidden_size, n_layers, bidirectional=self.bidirectional, dropout=hidden_dropout, batch_first=True)
         if self.input_transform:
             self.input_layer = nn.Linear(input_size, hidden_size)
         self.input_dropout = VariationalDropout(input_dropout) if input_dropout else None
-        self.output_dropout = VariationalDropout(output_dropout) if output_dropout else None
-        self.output_layer = nn.Linear(hidden_size, output_size) if output_size else None
+        self.output_dropout = (VariationalDropout if self.output_seq else nn.Dropout)(output_dropout) if output_dropout else None
+        self.output_layer = nn.Linear(self.num_directions * hidden_size, output_size) if output_size is not None else None
 
     def forward(self, input): # input: (batch_size, sequence_length, embedding_size)
         if self.input_dropout is not None:
             input = self.input_dropout(input)
         if hasattr(self, 'input_layer'):
             input = self.input_layer(input)
-        if isinstance(self.lstm, nn.ModuleList):
+        if isinstance(self.lstm, nn.ModuleList): # TODO: support bidirectional
             x = input
             for l, rnn in enumerate(self.lstm):
                 out, _ = rnn(x)
@@ -182,11 +188,12 @@ class LSTM_Approximator(nn.Module):
             output = x
         else:
             output, (h, c) = self.lstm(input)
+        out = output if self.output_seq else h.view(self.n_layers, self.num_directions, *h.shape[1:])[-1].transpose(0, 1).reshape(h.size(1), -1)
         if self.output_dropout is not None:
-            output = self.output_dropout(output)
+            out = self.output_dropout(out)
         if self.output_layer is not None:
-            output = self.output_layer(output)
-        return output
+            out = self.output_layer(out)
+        return out
 
 
 class Transformer_Approximator(nn.Module):
