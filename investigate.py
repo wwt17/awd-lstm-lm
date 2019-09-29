@@ -133,7 +133,7 @@ if __name__ == '__main__':
         matplotlib.use('agg')
 
         if args.op == 'pos_analysis':
-            corpus = data.prepare_corpus(args.pos_data)
+            corpus = data.prepare_corpus(args.pos_data, data.get_holistic_text)
             id_to_token_map_py = corpus.vocab.id_to_token_map_py
             seq = split_pos_seq(getattr(corpus, stage), id_to_token_map_py)
             all_res = defaultdict(lambda: defaultdict(dict))
@@ -253,7 +253,7 @@ if __name__ == '__main__':
     elif args.op.startswith('compare') or args.op.startswith('view'):
         context_sizes = args.context_sizes
         context_sizes.sort(reverse=True)
-        corpus = data.prepare_corpus(args.data)
+        corpus = data.prepare_corpus(args.data, data.get_holistic_text)
         id_to_token_map_py = corpus.vocab.id_to_token_map_py
         seq = getattr(corpus, stage)
         dataset = FixedLengthContextDataset(seq[args.max_seq_len - args.seq_len :], args.seq_len)

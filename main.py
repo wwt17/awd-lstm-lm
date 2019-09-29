@@ -130,7 +130,7 @@ def model_load(fn):
     with open(fn, 'rb') as f:
         model, criterion, optimizer = torch.load(f)
 
-corpus = data.prepare_corpus(args.data)
+corpus = data.prepare_corpus(args.data, data.get_holistic_text)
 
 train_batch_size = args.batch_size
 eval_batch_size = args.eval_batch_size

@@ -113,12 +113,12 @@ embedder = get_embedder(model, is_GPT2)
 output_layer = get_output_layer(model, is_GPT2)
 criterion_fn = get_criterion_fn(model, criterion, is_GPT2)
 
-corpus = data.prepare_corpus(args.data)
+corpus = data.prepare_corpus(args.data, data.get_holistic_text)
 
 pos_datafile = os.path.dirname(args.data if args.data.endswith('/') else args.data+'/')+'_pos/'
 print('try POS data file: {}'.format(pos_datafile))
 if os.path.exists(pos_datafile):
-    pos_corpus = data.prepare_corpus(pos_datafile, with_pos=True)
+    pos_corpus = data.prepare_corpus(pos_datafile, data.get_holistic_text, with_pos=True)
     print('Built pos corpus')
 else:
     print('POS file does not exist.')
