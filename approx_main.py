@@ -425,11 +425,12 @@ def get_prediction_and_loss(x, y, teacher_output=None, get_output=None):
             logits_dim = logits.dim()
             gt_ce_loss = F.cross_entropy(logits.permute(*([0, logits_dim - 1] + list(range(1, logits_dim - 1)))), y)
             loss = ((L * T * T) * kl_loss if L > 0. else 0.) + (1. - L) * gt_ce_loss
+            corrects = (p.argmax(-1) == y)
     else:
         assert teacher_output is not None
         loss = criterion(prediction, teacher_output)
-        gt_ce_loss, entropies = None, None
-    return prediction, loss, gt_ce_loss, entropies
+        gt_ce_loss, entropies, corrects = None, None, None
+    return prediction, loss, gt_ce_loss, entropies, corrects
 
 def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix='valid'):
     global global_step
@@ -447,6 +448,7 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
     )
     total_loss = 0.
     total_entropy = 0.
+    total_correct = 0
     total_gt_ce_loss = 0.
     if args.eval_teacher_loss:
         total_teacher_loss = 0.
@@ -464,10 +466,12 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
                 x, y, teacher_output = data_item
             batch_size = len(y)
             n += batch_size
-            prediction, loss, gt_ce_loss, entropies = get_prediction_and_loss(x, y, teacher_output, dataset.get_output) if not is_classification else get_prediction_and_loss(x, y)
+            prediction, loss, gt_ce_loss, entropies, corrects = get_prediction_and_loss(x, y, teacher_output, dataset.get_output) if not is_classification else get_prediction_and_loss(x, y)
             total_loss += loss.item() * batch_size
             if entropies is not None:
                 total_entropy += entropies.sum().item()
+            if corrects is not None:
+                total_correct += corrects.int().sum().item()
             if not args.approx_dist:
                 output = dataset.get_output(prediction)
                 gt_ce_loss = teacher_criterion_fn(output, y)
@@ -477,6 +481,9 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
             if entropies is not None:
                 postfix += ' ent={:.3f}'.format(
                     total_entropy / n)
+            if corrects is not None:
+                postfix += ' acc={:7.2%}'.format(
+                    total_correct / n)
             if args.eval_teacher_loss:
                 teacher_loss = teacher_criterion_fn(dataset.get_output(teacher_output), y)
                 total_teacher_loss += teacher_loss * batch_size
@@ -487,16 +494,22 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
             t.set_postfix_str(postfix)
 
     loss = total_loss / len(dataset)
-    entropy = total_entropy / len(dataset)
+    entropy = total_entropy / len(dataset) if entropies is not None else None
     gt_ce_loss = total_gt_ce_loss / len(dataset)
+    acc = total_correct / len(dataset) if corrects is not None else None
     ppl = math.exp(gt_ce_loss)
-    print('{} loss={:.6f} approx loss={:6.2f} ppl={:6.2f} ent={:2.3f}'.format(
-        prefix, loss, gt_ce_loss, ppl, entropy))
+    pr = '{} loss={:.6f} gt_ce_loss={:6.2f} ppl={:6.2f}'.format(
+        prefix, loss, gt_ce_loss, ppl)
     writer.add_scalar('{}/loss'.format(prefix), loss, global_step)
     writer.add_scalar('{}/gt_ce_loss'.format(prefix), gt_ce_loss, global_step)
     writer.add_scalar('{}/ppl'.format(prefix), ppl, global_step)
-    if entropy:
+    if entropy is not None:
         writer.add_scalar('{}/entropy'.format(prefix), entropy, global_step)
+        pr += ' ent={:2.3f}'.format(entropy)
+    if acc is not None:
+        writer.add_scalar('{}/acc'.format(prefix), acc, global_step)
+        pr += ' acc={:7.2%}'.format(acc)
+    print(pr)
 
     if args.last_n is not None:
         model.last_n = args.last_n
@@ -518,8 +531,11 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
     )
     total_loss = 0.
     total_entropy = 0.
+    total_correct = 0
     interval_loss = 0.
     interval_entropy = 0.
+    interval_correct = 0
+    interval_nelement = 0
     t = tqdm(data_loader, desc='epoch {:3d}'.format(epoch), dynamic_ncols=True)
     for i_batch, data_item in enumerate(t):
         global_step += 1
@@ -533,17 +549,23 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
             x, y, teacher_output = data_item
         batch_size = len(y)
         optimizer.zero_grad()
-        prediction, loss, gt_ce_loss, entropies = get_prediction_and_loss(x, y, teacher_output, dataset.get_output) if not is_classification else get_prediction_and_loss(x, y)
+        prediction, loss, gt_ce_loss, entropies, corrects = get_prediction_and_loss(x, y, teacher_output, dataset.get_output) if not is_classification else get_prediction_and_loss(x, y)
         writer.add_scalar('{}/loss'.format(prefix), loss.item(), global_step)
         if gt_ce_loss is not None:
             writer.add_scalar('{}/gt_ce_loss'.format(prefix), gt_ce_loss.item(), global_step)
         total_loss += loss.item() * batch_size
+        interval_nelement += y.nelement()
         interval_loss += loss.item()
         if entropies is not None:
             entropy = entropies.sum()
             total_entropy += entropy.item()
-            writer.add_scalar('{}/entropy'.format(prefix), entropies.mean().item(), global_step)
             interval_entropy += entropy.item()
+            writer.add_scalar('{}/entropy'.format(prefix), entropy.item() / entropies.nelement(), global_step)
+        if corrects is not None:
+            correct = corrects.int().sum()
+            total_correct += correct.item()
+            interval_correct += correct.item()
+            writer.add_scalar('{}/acc'.format(prefix), correct.item() / corrects.nelement(), global_step)
         loss.backward()
         grad_norm = torch.nn.utils.clip_grad_norm_(params, args.clip)
         writer.add_scalar('{}/grad_norm'.format(prefix), grad_norm, global_step)
@@ -553,15 +575,21 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
             writer.add_scalar('{}/copy_w'.format(prefix), copy_w.item(), global_step)
 
         if (i_batch + 1) % args.log_interval == 0:
-            mean_loss = interval_loss / args.log_interval
-            mean_entropy = interval_entropy / args.log_interval / batch_size
-            t.set_postfix_str('lr={:05.5f} loss={:.6f} ent={:.6f}{}'.format(
+            postfix = 'lr={} loss={:.2f}'.format(
                 optimizer.param_groups[0]['lr'],
-                mean_loss,
-                mean_entropy,
-                ' copy_w={:.3f}'.format(copy_w.item()) if copy_w is not None else '',))
+                interval_loss / args.log_interval,
+            )
+            if entropies is not None:
+                postfix += ' ent={:.2f}'.format(interval_entropy / interval_nelement)
+            if corrects is not None:
+                postfix += ' acc={:7.2%}'.format(interval_correct / interval_nelement)
+            if copy_w is not None:
+                postfix += ' copy_w={:.3f}'.format(copy_w.item())
+            t.set_postfix_str(postfix)
+            interval_nelement = 0
             interval_loss = 0.
             interval_entropy = 0.
+            interval_correct = 0
 
         if global_step % args.eval_interval == 0:
             valid_loss = evaluate()
