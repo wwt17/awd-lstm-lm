@@ -88,9 +88,15 @@ def get_model_fn(model):
 def get_embedder(model, is_GPT2):
     return model.word_embedder if is_GPT2 else model.encoder
 
+def get_embedding_weight(embedder):
+    if isinstance(embedder, torch.nn.Embedding):
+        weight = embedder.weight
+    else:
+        weight = embedder.embedding
+    return weight
 
-def get_embedding_size(embedder, is_GPT2):
-    return (embedder.embedding if is_GPT2 else embedder.weight).size(1)
+def get_embedding_size(embedder):
+    return get_embedding_weight(embedder).size(1)
 
 
 def get_output_layer(model, is_GPT2):

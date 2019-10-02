@@ -141,14 +141,6 @@ parser.add_argument('--eval_teacher_loss', action='store_true',
 parser.add_argument('--save_intermediate', action='store_true',
                     help='whether to save intermediate results besides the best one')
 args = parser.parse_args()
-required_args = {
-    'mlp': ['hidden_size'],
-    'cnn': ['n_layers', 'channels', 'kernel_size', 'variational', 'output_layer_type'],
-    'lstm': ['hidden_size', 'n_layers'],
-    'transformer': ['config_model'],
-}[args.model_type]
-for a in required_args:
-    assert getattr(args, a) is not None, 'must specify {}'.format(a)
 
 # Set the random seed manually for reproducibility.
 if args.seed is not None:
@@ -202,7 +194,7 @@ if args.teacher_model is not None:
         param.requires_grad = False
 else:
     assert not args.eval_teacher_loss
-    is_GPT2 = True
+    is_GPT2 = True #TODO: False
 
 ###############################################################################
 # Load dataset
@@ -260,7 +252,7 @@ if args.teacher_model is not None:
     if output_layer is None:
         output_layer = get_output_layer(teacher_model, is_GPT2)
 
-embedding_size = args.embedding_size if embedder is None else get_embedding_size(embedder, is_GPT2)
+embedding_size = args.embedding_size if embedder is None else get_embedding_size(embedder)
 hidden_size = args.hidden_size
 output_size = datasets['train'].target_size if isinstance(datasets['train'], data.HiddenStateDataset) else args.output_size
 # output_size = output_layer.weight.size(1)
@@ -305,6 +297,8 @@ if model is None:
         config_model = get_config_model(args.config_model, vocab_size)
         model = approx_models.Transformer_Approximator(
             hparams=config_model,
+            output_seq=args.output_seq,
+            bidirectional=args.bidirectional,
             output_size=None if args.no_transform_output else output_size,
         )
 

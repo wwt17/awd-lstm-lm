@@ -3,12 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import texar as tx
-from texar.modules import TransformerEncoder, SinusoidsPositionEmbedder
+from texar.modules import BertEncoder
 
 from locked_dropout import VariationalDropout
 from weight_drop import WeightDrop
 from utils import get_model_fn
 from gpt2_decoder import GPT2Decoder
+
+from torch.nn.utils.rnn import PackedSequence
 
 import copy
 
@@ -197,14 +199,34 @@ class LSTM_Approximator(nn.Module):
 
 
 class Transformer_Approximator(nn.Module):
-    def __init__(self, hparams, output_size=None):
+    def __init__(self, hparams, output_seq=False, bidirectional=False, output_size=None):
         super(Transformer_Approximator, self).__init__()
-        self.model = GPT2Decoder(hparams=hparams)
+        self.output_seq = output_seq
+        self.bidirectional = bidirectional
+        self.model = (BertEncoder if bidirectional else GPT2Decoder)(hparams=hparams)
+        del self.model.word_embedder
         self.model.word_embedder = tx.core.layers.Identity()
-        self.model.decoder._output_layer = tx.core.layers.Identity() if output_size is None else nn.Linear(hparams['decoder']['dim'], output_size)
+        if bidirectional:
+            if output_size is not None:
+                del self.model.pooler
+                self.model.pooler = nn.Sequential(
+                    nn.Linear(self.model._hparams.hidden_size, output_size),
+                    #nn.Tanh(),
+                )
+        else:
+            self.model.decoder._output_layer = tx.core.layers.Identity() if output_size is None else nn.Linear(hparams['decoder']['dim'], output_size)
 
     def forward(self, input): # input: (batch_size, sequence_length, embedding_size)
-        model_fn = get_model_fn(self.model)
-        output = model_fn(input, batch_first=True)
-        output = self.model.decoder.output_layer(output)
+        if self.bidirectional:
+            if isinstance(input, PackedSequence):
+                input, sequence_length = nn.utils.rnn.pad_packed_sequence(input, batch_first=True)
+            else:
+                sequence_length = None
+            output, pooled_output = self.model(input, sequence_length=sequence_length)
+            output = output if self.output_seq else pooled_output
+        else:
+            assert self.output_seq
+            model_fn = get_model_fn(self.model)
+            output = model_fn(input, batch_first=True)
+            output = self.model.decoder.output_layer(output)
         return output
