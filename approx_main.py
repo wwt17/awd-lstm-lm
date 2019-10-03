@@ -88,7 +88,7 @@ parser.add_argument('--bidirectional', action='store_true')
 parser.add_argument('--explicit_stack', action='store_true')
 parser.add_argument('--no_transform_output', action='store_true')
 ## Transformer
-parser.add_argument('--config_model', type=str, default='config_GPT2_117M',
+parser.add_argument('--config_model', type=str,
                     help='The model configuration file to configure the model.')
 # Training/evaluation/test
 ## Meta

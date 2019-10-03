@@ -25,16 +25,25 @@ class Corpus(object):
             **{s: special_token_fn(globals()[s]) for s in
                ['pad_token', 'bos_token', 'eos_token', 'unk_token']}
         )
-        if path.endswith('_bpe'):
+        # Set designated speial tokens in some cases
+        if path.endswith('_bpe') or 'Bert' in path:
             with open(vocab_filename, 'r') as vocab_file:
                 vocab = list(line.strip() for line in vocab_file)
-            special_token = vocab[-1]
-            self.vocab._pad_token = special_token
-            self.vocab._bos_token = special_token
-            self.vocab._eos_token = special_token
-            self.vocab._unk_token = special_token
+            if path.endswith('_bpe'):
+                special_token = vocab[-1]
+                special_tokens = {key: special_token for key in ['pad', 'bos', 'eos', 'unk']}
+            elif 'Bert' in path:
+                special_tokens = {
+                    'pad': '[PAD]',
+                    'bos': '[CLS]',
+                    'eos': '[SEP]',
+                    'unk': '[UNK]',
+                }
+            for key, token in special_tokens.items():
+                setattr(self.vocab, '_{}_token'.format(key), token)
             self.vocab._id_to_token_map_py = dict(zip(range(len(vocab)), vocab))
             self.vocab._token_to_id_map_py = dict(zip(vocab, range(len(vocab))))
+
         for stage in ['train', 'valid', 'test']:
             try:
                 setattr(self, stage, get_fn(path, stage, self.vocab))
