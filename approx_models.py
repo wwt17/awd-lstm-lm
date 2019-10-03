@@ -199,16 +199,15 @@ class LSTM_Approximator(nn.Module):
 
 
 class Transformer_Approximator(nn.Module):
-    def __init__(self, hparams, output_seq=False, bidirectional=False, output_size=None):
+    def __init__(self, hparams, output_seq=False, bidirectional=False, output_size=None, remove_word_embedder=True):
         super(Transformer_Approximator, self).__init__()
         self.output_seq = output_seq
         self.bidirectional = bidirectional
         self.model = (BertEncoder if bidirectional else GPT2Decoder)(hparams=hparams)
-        del self.model.word_embedder
-        self.model.word_embedder = tx.core.layers.Identity()
+        if remove_word_embedder:
+            self.model.word_embedder = tx.core.layers.Identity()
         if bidirectional:
             if output_size is not None:
-                del self.model.pooler
                 self.model.pooler = nn.Sequential(
                     nn.Linear(self.model._hparams.hidden_size, output_size),
                     #nn.Tanh(),

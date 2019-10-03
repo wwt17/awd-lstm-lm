@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import texar as tx
 from tensorboardX import SummaryWriter
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import PackedSequence
@@ -295,12 +296,17 @@ if model is None:
             output_dropout=args.output_dropout)
     elif args.model_type == 'transformer':
         config_model = get_config_model(args.config_model, vocab_size)
+        use_pretrained = config_model['pretrained_model_name'] is not None
         model = approx_models.Transformer_Approximator(
             hparams=config_model,
             output_seq=args.output_seq,
             bidirectional=args.bidirectional,
-            output_size=None if args.no_transform_output else output_size,
+            output_size=None if args.no_transform_output or use_pretrained else output_size,
+            remove_word_embedder=not use_pretrained,
         )
+        if use_pretrained:
+            embedder = model.model.word_embedder
+            model.model.word_embedder = tx.core.layers.Identity()
 
 if copy_w is None and args.copy_w is not None:
     copy_w = nn.Parameter(torch.tensor(args.copy_w, requires_grad=True, device=device))
