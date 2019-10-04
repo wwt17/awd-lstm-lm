@@ -130,30 +130,52 @@ def get_vocab_all_pos(pos_datafile, vocab):
     return pos_
 
 
-class FixedLengthContextDataset(Dataset):
-    def __init__(self, seq, context_size):
-        self.seq = seq
-        self.context_size = context_size
+class ZipDataset(Dataset):
+    def __init__(self, *datasets):
+        self.datasets = datasets
 
     def __len__(self):
-        return len(self.seq) - self.context_size
+        lengths = list(map(len, self.datasets))
+        n = lengths[0]
+        assert all(length == n for length in lengths)
+        return n
 
     def __getitem__(self, i):
-        x = self.seq[i : i + self.context_size]
-        y = self.seq[i + 1 : i + 1 + self.context_size]
+        return tuple(dataset[i] for dataset in self.datasets)
+
+
+def zip_collate_fn(*collate_fns):
+    def fn(examples):
+        return tuple(collate_fn(part) for collate_fn, part in zip(collate_fns, zip(*examples)))
+
+
+class FixedLengthContextDataset(Dataset):
+    def __init__(self, seq, context_size, output_seq=True, last_n=None):
+        self.seq = seq
+        self.context_size = context_size
+        self.output_seq = output_seq
+        self.last_n = last_n
+        self.start = self.context_size
+
+    def __len__(self):
+        return len(self.seq) - self.start
+
+    def __getitem__(self, i):
+        i += self.start
+        x = self.seq[i - self.context_size : i]
+        if self.output_seq:
+            y = self.seq[i + 1 - (self.last_n if self.last_n is not None else self.context_size) : i + 1]
+        else:
+            y = self.seq[i]
         return x, y
 
 
 class HiddenStateDataset(Dataset):
-    def __init__(self, seq, hidden_state_h5py, context_size, last_n=None, is_GPT2=False, predict_all_layers=False, predict_c=False):
-        self.context_size = context_size
-        if last_n is None:
-            self.no_last_n = True
-            self.last_n = 1
-        else:
-            self.no_last_n = False
-            self.last_n = last_n
-        self.seq = seq
+    def __init__(self, hidden_state_h5py, output_seq=True, last_n=None, is_GPT2=False, predict_all_layers=False, predict_c=False):
+        self.output_seq = output_seq
+        if not self.output_seq:
+            last_n = 1
+        self.last_n = last_n
         self.hidden_state_h5py = h5py.File(hidden_state_h5py, 'r')
         self.output = self.hidden_state_h5py['output']
         self.is_GPT2 = is_GPT2
@@ -172,24 +194,19 @@ class HiddenStateDataset(Dataset):
                 self.states.append(h)
         self.n = len(self.states[0])
         assert all(len(s) == self.n for s in self.states)
-        self.start = len(self.seq) - self.n
-        assert self.context_size <= self.start + self.last_n - 1
+        self.start = self.last_n - 1
 
     def __len__(self):
-        return self.n - (self.last_n - 1)
+        return self.n - self.start
 
     def __getitem__(self, i):
-        i += self.last_n - 1
-        i_ = i + self.start
-        x = self.seq[i_ - self.context_size : i_]
-        y = self.seq[i_ - self.last_n + 1 : i_ + 1]
+        i += self.start
         out = torch.cat([torch.tensor(h[i - self.last_n + 1 : i + 1]) for h in self.states], -1)
         if not self.is_GPT2:
             out = out.squeeze(-2)
-        if self.no_last_n:
-            y = y.squeeze(0)
+        if not self.output_seq:
             out = out.squeeze(0)
-        return x, y, out
+        return out
 
     @property
     def target_size(self):
