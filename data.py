@@ -147,6 +147,7 @@ class ZipDataset(Dataset):
 def zip_collate_fn(*collate_fns):
     def fn(examples):
         return tuple(collate_fn(part) for collate_fn, part in zip(collate_fns, zip(*examples)))
+    return fn
 
 
 class FixedLengthContextDataset(Dataset):

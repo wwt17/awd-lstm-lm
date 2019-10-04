@@ -19,7 +19,7 @@ import data
 import model
 import approx_models
 
-from utils import map_structure, get_config_model, get_splits, get_embedder, get_embedding_size, get_output_layer, get_criterion_fn, force_reduce_lr, set_lr
+from utils import map_structure, get_config_model, get_splits, get_embedder, get_embedding_size, get_output_layer, get_criterion_fn, force_reduce_lr, set_lr, cross_entropy, set_all_requires_grad
 from gpt2_decoder import GPT2Decoder
 
 def arg_to_list(t):
@@ -50,6 +50,8 @@ parser.add_argument('--predict_c', action='store_true')
 # Model
 parser.add_argument('--new_embedder', action='store_true')
 parser.add_argument('--new_output_layer', action='store_true')
+parser.add_argument('--fix_embedder', action='store_true')
+parser.add_argument('--fix_output_layer', action='store_true')
 parser.add_argument('--model_type', type=str, choices=['mlp', 'cnn', 'lstm', 'transformer'],
                     required=True,
                     help='Type of approximator model (mlp, cnn, lstm, transformer)')
@@ -188,15 +190,24 @@ if not is_classification:
 
 print('Loading approximated model ...')
 if args.teacher_model is not None:
-    teacher_model, teacher_criterion, _ = torch.load(args.teacher_model)
-    if teacher_criterion is None:
-        teacher_criterion = SplitCrossEntropyLoss(args.embedding_size, splits=get_splits(vocab_size), verbose=False)
+    loaded = torch.load(args.teacher_model)
+    teacher_model, teacher_criterion = loaded[:2]
+    new_format_teacher = (len(loaded) >= 7)
+    if new_format_teacher:
+        teacher_embedder, teacher_output_layer = loaded[5:7]
+        is_GPT2 = True
+    else:
+        is_GPT2 = isinstance(teacher_model, GPT2Decoder)
+        teacher_embedder = get_embedder(teacher_model, is_GPT2)
+        teacher_output_layer = get_output_layer(teacher_output_layer, is_GPT2)
+        if teacher_criterion is None:
+            teacher_criterion = SplitCrossEntropyLoss(args.embedding_size, splits=get_splits(vocab_size), verbose=False)
     teacher_model.to(device)
     teacher_criterion.to(device)
-    is_GPT2 = isinstance(teacher_model, GPT2Decoder)
+    teacher_embedder.to(device)
+    teacher_output_layer.to(device)
     # Freeze all parameters of the approximated model, including the embedder and output_layer
-    for param in itertools.chain(teacher_model.parameters(), teacher_criterion.parameters()):
-        param.requires_grad = False
+    set_all_requires_grad(itertools.chain(teacher_model.parameters(), teacher_criterion.parameters()), False)
 else:
     assert not args.eval_teacher_loss
 
@@ -274,10 +285,12 @@ model_path = os.path.join(args.ckpt, 'best.pt')
 model_load(model_path)
 
 if args.teacher_model is not None:
-    if embedder is None:
-        embedder = get_embedder(teacher_model, is_GPT2)
-    if output_layer is None:
-        output_layer = get_output_layer(teacher_model, is_GPT2)
+    if embedder is None and not args.new_embedder:
+        embedder = teacher_embedder
+    else:
+        del teacher_embedder
+    if output_layer is None and not args.new_output_layer:
+        output_layer = teacher_output_layer
 
 embedding_size = args.embedding_size if embedder is None else get_embedding_size(embedder)
 hidden_size = args.hidden_size
@@ -334,6 +347,9 @@ if model is None:
             embedder = model.model.word_embedder
             model.model.word_embedder = tx.core.layers.Identity()
 
+set_all_requires_grad(embedder.parameters(), not args.fix_embedder)
+set_all_requires_grad(output_layer.parameters(), not args.fix_output_layer)
+
 if copy_w is None and args.copy_w is not None:
     copy_w = nn.Parameter(torch.tensor(args.copy_w, requires_grad=True, device=device))
 
@@ -343,7 +359,7 @@ embedder.to(device)
 output_layer.to(device)
 criterion.to(device)
 if args.teacher_model is not None:
-    teacher_criterion_fn = get_criterion_fn(teacher_model, teacher_criterion, is_GPT2)
+    teacher_criterion_fn = (lambda output, targets: cross_entropy(teacher_output_layer(output), targets)) if new_format_teacher else get_criterion_fn(teacher_model, teacher_criterion, is_GPT2)
     del teacher_model
 
 def get_named_params():
@@ -419,7 +435,7 @@ def get_prediction_and_loss(x, y, teacher_output=None, get_output=None):
                     s *= d
                 kl_loss = F.kl_div((logits / T).log_softmax(-1), (teacher_logits / T).softmax(-1), reduction='batchmean') / s
             logits_dim = logits.dim()
-            gt_ce_loss = F.cross_entropy(logits.permute(*([0, logits_dim - 1] + list(range(1, logits_dim - 1)))), y)
+            gt_ce_loss = cross_entropy(logits.permute(*([0, logits_dim - 1] + list(range(1, logits_dim - 1)))), y)
             loss = ((L * T * T) * kl_loss if L > 0. else 0.) + (1. - L) * gt_ce_loss
             corrects = (p.argmax(-1) == y)
     else:

@@ -68,6 +68,16 @@ def loss_repr(loss):
         loss, math.exp(loss), loss / math.log(2))
 
 
+def set_all_requires_grad(params, requires_grad):
+    for param in params:
+        param.requires_grad = requires_grad
+
+
+def cross_entropy(logits, targets):
+    logits_dim = logits.dim()
+    return F.cross_entropy(logits.permute(*([0, logits_dim - 1] + list(range(1, logits_dim - 1)))), targets)
+
+
 def get_model_fn(model):
     def model_fn(data, batch_first=False):
         if not batch_first:
