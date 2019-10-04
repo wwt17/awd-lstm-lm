@@ -4,6 +4,7 @@ import argparse
 import time
 import itertools
 from tqdm import tqdm
+import h5py
 import math
 import numpy as np
 import torch
@@ -141,7 +142,10 @@ parser.add_argument('--eval_teacher_loss', action='store_true',
                     help='whether to evaluate the loss of the approximated model')
 parser.add_argument('--save_intermediate', action='store_true',
                     help='whether to save intermediate results besides the best one')
+parser.add_argument('--get_output_hidden', action='store_true')
 args = parser.parse_args()
+
+batch_sizes = {stage: getattr(args, '{}_batch_size'.format(stage)) for stage in ('train', 'valid', 'test')}
 
 # Set the random seed manually for reproducibility.
 if args.seed is not None:
@@ -338,36 +342,6 @@ params = [param for name, param in named_params]
 total_params = sum(map(torch.Tensor.nelement, params))
 print('Model total # parameters:', total_params)
 
-if lr_scheduler is not None:
-    if args.lr is not None:
-        set_lr(lr_scheduler, args.lr)
-    elif args.force_reduce_lr:
-        force_reduce_lr(lr_scheduler)
-
-if optimizer is None and args.lr is not None:
-    if args.optimizer == 'sgd':
-        optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
-    elif args.optimizer == 'adam':
-        optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        factor=args.reduce_lr_factor,
-        patience=args.reduce_lr_patience,
-        verbose=True,
-        threshold=args.reduce_lr_threshold,
-        cooldown=args.reduce_lr_cooldown,
-        min_lr=args.reduce_lr_min_lr,
-    )
-
-if global_step is None:
-    global_step = 0
-
-###############################################################################
-# Training code
-###############################################################################
-
-writer = SummaryWriter(os.path.join(args.ckpt, 'log'))
-
 
 def get_prediction_and_loss(x, y, teacher_output=None, get_output=None):
     _embedder_fn = lambda x: embedder(x).detach()
@@ -432,12 +406,14 @@ def get_prediction_and_loss(x, y, teacher_output=None, get_output=None):
         gt_ce_loss, entropies, corrects = None, None, None
     return prediction, loss, gt_ce_loss, entropies, corrects
 
-def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix='valid'):
+
+writer = SummaryWriter(os.path.join(args.ckpt, 'log'))
+
+
+def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix='valid', output_hidden_file=None):
     global global_step
     # Turn on evaluation mode which disables dropout.
     model.eval()
-    if args.last_n is not None:
-        model.last_n = None
     data_loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -446,12 +422,18 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
         num_workers=args.num_workers,
         **({'collate_fn': collate_fn} if collate_fn is not None else {}),
     )
+
     total_loss = 0.
     total_entropy = 0.
     total_correct = 0
     total_gt_ce_loss = 0.
     if args.eval_teacher_loss:
         total_teacher_loss = 0.
+
+    if output_hidden_file is not None:
+        m_output = f.create_dataset('output', (len(dataset), output_size), dtype='f')
+        m = m_output
+
     with torch.no_grad():
         t = tqdm(data_loader, desc=prefix, dynamic_ncols=True)
         n = 0
@@ -493,27 +475,74 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
                 postfix += ' copy_w={:.3f}'.format(copy_w.item())
             t.set_postfix_str(postfix)
 
+            if output_hidden_file is not None:
+                #TODO: allow last_n
+                m[n - batch_size : n] = prediction.cpu()
+
     loss = total_loss / len(dataset)
     entropy = total_entropy / len(dataset) if entropies is not None else None
     gt_ce_loss = total_gt_ce_loss / len(dataset)
     acc = total_correct / len(dataset) if corrects is not None else None
     ppl = math.exp(gt_ce_loss)
+    write_scalars = {
+        'loss': loss,
+        'gt_ce_loss': gt_ce_loss,
+        'ppl': ppl,
+    }
     pr = '{} loss={:.6f} gt_ce_loss={:6.2f} ppl={:6.2f}'.format(
         prefix, loss, gt_ce_loss, ppl)
-    writer.add_scalar('{}/loss'.format(prefix), loss, global_step)
-    writer.add_scalar('{}/gt_ce_loss'.format(prefix), gt_ce_loss, global_step)
-    writer.add_scalar('{}/ppl'.format(prefix), ppl, global_step)
     if entropy is not None:
-        writer.add_scalar('{}/entropy'.format(prefix), entropy, global_step)
+        write_scalars['entropy'] = entropy
         pr += ' ent={:2.3f}'.format(entropy)
     if acc is not None:
-        writer.add_scalar('{}/acc'.format(prefix), acc, global_step)
+        write_scalars['acc'] = acc
         pr += ' acc={:7.2%}'.format(acc)
     print(pr)
+    if output_hidden_file is None:
+        for name, value in write_scalars.items():
+            writer.add_scalar('{}/{}'.format(prefix, name), value, global_step)
 
-    if args.last_n is not None:
-        model.last_n = args.last_n
     return loss, gt_ce_loss
+
+
+if args.get_output_hidden:
+    print('To get output and hidden states.')
+    os.makedirs(args.output_hidden_path, exist_ok=True)
+    for stage, dataset in datasets.items():
+        save_path = os.path.join(args.output_hidden_path, '{}.h5py'.format(stage))
+        with h5py.File(save_path, 'w') as f:
+            evaluate(dataset=datasets[stage], batch_size=batch_sizes[stage], prefix=stage, output_hidden_file=f)
+    sys.exit(0)
+
+
+if lr_scheduler is not None:
+    if args.lr is not None:
+        set_lr(lr_scheduler, args.lr)
+    elif args.force_reduce_lr:
+        force_reduce_lr(lr_scheduler)
+
+if optimizer is None and args.lr is not None:
+    if args.optimizer == 'sgd':
+        optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
+    elif args.optimizer == 'adam':
+        optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        factor=args.reduce_lr_factor,
+        patience=args.reduce_lr_patience,
+        verbose=True,
+        threshold=args.reduce_lr_threshold,
+        cooldown=args.reduce_lr_cooldown,
+        min_lr=args.reduce_lr_min_lr,
+    )
+
+if global_step is None:
+    global_step = 0
+
+
+###############################################################################
+# Training code
+###############################################################################
 
 
 def train(dataset=datasets['train'], batch_size=args.train_batch_size):
