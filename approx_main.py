@@ -398,6 +398,10 @@ def get_prediction_and_loss(x, y, teacher_output=None, get_output=None):
                 t = t[:, -args.last_n:]
         return t
     prediction = get_last_n(prediction_)
+
+    if teacher_output is not None:
+        teacher_logits = output_layer(get_output(teacher_output)).detach()
+
     assert not (args.approx_dist and args.approx_logit)
     if args.approx_dist or args.approx_logit:
         logits = output_layer(prediction)
@@ -423,13 +427,12 @@ def get_prediction_and_loss(x, y, teacher_output=None, get_output=None):
         else:
             p = logits.softmax(-1)
             log_p = logits.log_softmax(-1)
+        gt_ce_loss = cross_entropy(logits, y)
         entropies = -(p * log_p).sum(-1)
-        if teacher_output is not None:
-            teacher_logits = output_layer(get_output(teacher_output)).detach()
+        corrects = (p.argmax(-1) == y)
         if args.approx_logit:
             assert teacher_output is not None
             loss = F.mse_loss(logits, teacher_logits)
-            gt_ce_loss = None
         else:
             T = args.approx_dist_temp
             L = args.approx_dist_lambda
@@ -439,14 +442,13 @@ def get_prediction_and_loss(x, y, teacher_output=None, get_output=None):
                 for d in logits.shape[1:-1]:
                     s *= d
                 kl_loss = F.kl_div((logits / T).log_softmax(-1), (teacher_logits / T).softmax(-1), reduction='batchmean') / s
-            logits_dim = logits.dim()
-            gt_ce_loss = cross_entropy(logits.permute(*([0, logits_dim - 1] + list(range(1, logits_dim - 1)))), y)
             loss = ((L * T * T) * kl_loss if L > 0. else 0.) + (1. - L) * gt_ce_loss
-            corrects = (p.argmax(-1) == y)
     else:
         assert teacher_output is not None
         loss = criterion(prediction, teacher_output)
-        gt_ce_loss, entropies, corrects = None, None, None
+        gt_ce_loss = teacher_criterion_fn(prediction, y)
+        entropies, corrects = None, None
+
     return prediction, loss, gt_ce_loss, entropies, corrects
 
 
@@ -501,9 +503,6 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
                 total_entropy += entropies.sum().item()
             if corrects is not None:
                 total_correct += corrects.int().sum().item()
-            if not args.approx_dist:
-                output = get_output(prediction)
-                gt_ce_loss = teacher_criterion_fn(output, y)
             total_gt_ce_loss += gt_ce_loss.item() * batch_size
             postfix = 'ppl={:.3f}'.format(
                 math.exp(total_gt_ce_loss / n))
@@ -632,8 +631,7 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
         optimizer.zero_grad()
         prediction, loss, gt_ce_loss, entropies, corrects = get_prediction_and_loss(x, y, teacher_output, get_output) if args.teacher_model is not None else get_prediction_and_loss(x, y)
         writer.add_scalar('{}/loss'.format(prefix), loss.item(), global_step)
-        if gt_ce_loss is not None:
-            writer.add_scalar('{}/gt_ce_loss'.format(prefix), gt_ce_loss.item(), global_step)
+        writer.add_scalar('{}/gt_ce_loss'.format(prefix), gt_ce_loss.item(), global_step)
         total_loss += loss.item() * batch_size
         interval_nelement += y.nelement()
         interval_loss += loss.item()
