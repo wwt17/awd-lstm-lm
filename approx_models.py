@@ -199,7 +199,7 @@ class LSTM_Approximator(nn.Module):
 
 
 class Transformer_Approximator(nn.Module):
-    def __init__(self, hparams, output_seq=False, bidirectional=False, output_size=None, remove_word_embedder=True):
+    def __init__(self, hparams, output_seq=False, bidirectional=False, output_size=None, remove_word_embedder=True, pooler_activation=nn.Tanh()):
         super(Transformer_Approximator, self).__init__()
         self.output_seq = output_seq
         self.bidirectional = bidirectional
@@ -208,10 +208,12 @@ class Transformer_Approximator(nn.Module):
             self.model.word_embedder = tx.core.layers.Identity()
         if bidirectional:
             if output_size is not None:
-                self.model.pooler = nn.Sequential(
-                    nn.Linear(self.model._hparams.hidden_size, output_size),
-                    #nn.Tanh(),
-                )
+                self.model.pooler = nn.Linear(self.model._hparams.hidden_size, output_size)
+                if pooler_activation is not None:
+                    self.model.pooler = nn.Sequential(
+                        self.model.pooler,
+                        pooler_activation,
+                    )
         else:
             self.model.decoder._output_layer = tx.core.layers.Identity() if output_size is None else nn.Linear(hparams['decoder']['dim'], output_size)
 

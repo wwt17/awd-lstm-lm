@@ -94,6 +94,7 @@ parser.add_argument('--no_transform_output', action='store_true')
 ## Transformer
 parser.add_argument('--config_model', type=str,
                     help='The model configuration file to configure the model.')
+parser.add_argument('--pooler_activation', type=str, choices=['none', 'tanh'], default='none')
 # Training/evaluation/test
 ## Meta
 parser.add_argument('--seed', type=int,
@@ -342,6 +343,10 @@ if model is None:
             bidirectional=args.bidirectional,
             output_size=None if args.no_transform_output or use_pretrained else output_size,
             remove_word_embedder=not use_pretrained,
+            pooler_activation={
+                'none': None,
+                'tanh': nn.Tanh(),
+            }[args.pooler_activation],
         )
         if use_pretrained:
             embedder = model.model.word_embedder
