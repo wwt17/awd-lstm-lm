@@ -141,6 +141,7 @@ parser.add_argument('--output_dropout', type=float, default=0.,
 parser.add_argument('--weight_dropout', type=float, default=0.,
                     help='amount of weight dropout to apply to the hidden matrices')
 # Logging/save
+parser.add_argument('--valid_metric', type=str, choices=['loss', 'gt_ce_loss', 'entropy', 'acc'], default='loss')
 parser.add_argument('--eval_teacher_loss', action='store_true',
                     help='whether to evaluate the loss of the approximated model')
 parser.add_argument('--save_intermediate', action='store_true',
@@ -548,7 +549,7 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
         for name, value in write_scalars.items():
             writer.add_scalar('{}/{}'.format(prefix, name), value, global_step)
 
-    return loss, gt_ce_loss
+    return loss, gt_ce_loss, entropy, acc
 
 
 if args.get_output_hidden:
@@ -671,8 +672,8 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
             interval_correct = 0
 
         if global_step % args.eval_interval == 0:
-            valid_loss = evaluate()
-            update_valid_loss(valid_loss)
+            valid_result = evaluate()
+            update_valid_result(valid_result)
             model.train()
 
     loss = total_loss / len(dataset)
@@ -680,28 +681,34 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
     print('train loss={:.6f} entropy={:.6f}'.format(
         loss, entropy))
 
-def update_valid_loss(valid_loss):
-    valid_loss, valid_gt_ce_loss = valid_loss
-    global best_valid_loss
-    if valid_loss < best_valid_loss:
-        print('Saving model (new best validation)')
-        if args.save_intermediate:
-            model_save(os.path.join(args.ckpt, 'step{}.pt'.format(global_step)))
-        model_save(os.path.join(args.ckpt, 'best.pt'))
-        best_valid_loss = valid_loss
-    lr_scheduler.step(valid_loss)
+def update_valid_result(valid_result, saving=True):
+    loss, gt_ce_loss, entropy, acc = valid_result
+    if saving and args.save_intermediate:
+        model_save(os.path.join(args.ckpt, 'step{}.pt'.format(global_step)))
+    ori_value = locals()[args.valid_metric]
+    value = ori_value
+    if args.valid_metric == 'acc':
+        value = 1. - value
+    global best_valid_value
+    if best_valid_value is None or value < best_valid_value:
+        print('new best validation {} {}'.format(args.valid_metric, ori_value))
+        if saving:
+            model_save(os.path.join(args.ckpt, 'best.pt'))
+        best_valid_value = value
+    lr_scheduler.step(value)
 
 # Loop over epochs.
 # At any point you can hit Ctrl + C to break out of training early.
 try:
-    valid_loss = evaluate()
-    best_valid_loss, _ = valid_loss
+    best_valid_value = None
+    valid_result = evaluate()
+    update_valid_result(valid_result, saving=False)
 
     for epoch in range(1, args.epochs+1):
         epoch_start_time = time.time()
         train()
-        valid_loss = evaluate()
-        update_valid_loss(valid_loss)
+        valid_result = evaluate()
+        update_valid_result(valid_result)
 
 except KeyboardInterrupt:
     print('Exiting from training early')
@@ -712,6 +719,6 @@ if not model_load(best_model_path):
     raise Exception('{} is not found'.format(best_model_path))
 
 # Run on test data.
-test_loss = evaluate(datasets['test'], args.test_batch_size, prefix='test')
+test_result = evaluate(datasets['test'], args.test_batch_size, prefix='test')
 
 writer.close()
