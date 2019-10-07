@@ -655,7 +655,7 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
             writer.add_scalar('{}/copy_w'.format(prefix), copy_w.item(), global_step)
 
         if (i_batch + 1) % args.log_interval == 0:
-            postfix = 'lr={} loss={:.2f}'.format(
+            postfix = 'lr={:.1e} loss={:.2f}'.format(
                 optimizer.param_groups[0]['lr'],
                 interval_loss / args.log_interval,
             )
