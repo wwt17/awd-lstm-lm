@@ -84,6 +84,10 @@ def get_holistic_text(path, stage, vocab):
 def get_review_and_star(path, stage, vocab):
     review_tokens_file_name = '{}.review_tokens.txt'.format(stage)
     star_file_name = '{}.star.txt'.format(stage)
+
+    bos_token = vocab.bos_token
+    eos_token = vocab.eos_token
+
     examples = []
     with open(os.path.join(path, review_tokens_file_name), 'r') as review_tokens_file, \
          open(os.path.join(path, star_file_name), 'r') as star_file:
@@ -93,15 +97,14 @@ def get_review_and_star(path, stage, vocab):
     return examples
 
 
-def prepare_corpus(data_name, get_fn, with_pos=False):
-    import hashlib
-    fn = 'corpus.{}.data'.format(hashlib.md5(data_name.encode()).hexdigest())
+def prepare_corpus(data_path, get_fn, with_pos=False):
+    fn = os.path.join(data_path, 'corpus.data')
     if os.path.exists(fn):
         print('Loading cached dataset...')
         corpus = torch.load(fn)
     else:
         print('Producing dataset...')
-        corpus = Corpus(data_name, get_fn, with_pos=with_pos)
+        corpus = Corpus(data_path, get_fn, with_pos=with_pos)
         torch.save(corpus, fn)
     return corpus
 
