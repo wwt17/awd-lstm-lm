@@ -20,6 +20,7 @@ import model
 import approx_models
 
 from utils import map_structure, get_config_model, get_splits, get_embedder, get_embedding_size, get_output_layer, get_criterion_fn, force_reduce_lr, set_lr, cross_entropy, set_all_requires_grad
+import glue
 from gpt2_decoder import GPT2Decoder
 
 def arg_to_list(t):
@@ -164,20 +165,30 @@ if torch.cuda.is_available():
 
 device = torch.device('cuda' if args.cuda else 'cpu')
 
-is_classification = 'yelp' in args.data
-if is_classification:
+if 'yelp' in args.data:
+    is_classification = True
     if 'polarity' in args.data:
         n_classes = 2
     elif 'full' in args.data:
         n_classes = 5
     else:
         raise ValueError("Cannot infer number of classes from {}".format(args.data))
+    get_fn = data.get_review_and_star
+elif 'GLUE' in args.data:
+    is_classification = True
+    track = os.path.basename(args.data)
+    n_classes = glue.get_n_classes(track)
+    get_fn = glue.get_glue
+else:
+    is_classification = False
+    get_fn = data.get_holistic_text
+
 
 ###############################################################################
 # Load data
 ###############################################################################
 
-corpus = data.prepare_corpus(args.data, data.get_review_and_star if is_classification else data.get_holistic_text)
+corpus = data.prepare_corpus(args.data, get_fn)
 
 ###############################################################################
 # Load approximated model

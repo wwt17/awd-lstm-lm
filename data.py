@@ -26,13 +26,13 @@ class Corpus(object):
                ['pad_token', 'bos_token', 'eos_token', 'unk_token']}
         )
         # Set designated speial tokens in some cases
-        if path.endswith('_bpe') or 'Bert' in path:
+        if path.endswith('_bpe') or 'Bert' in path or 'GLUE' in path:
             with open(vocab_filename, 'r') as vocab_file:
                 vocab = list(line.strip() for line in vocab_file)
             if path.endswith('_bpe'):
                 special_token = vocab[-1]
                 special_tokens = {key: special_token for key in ['pad', 'bos', 'eos', 'unk']}
-            elif 'Bert' in path:
+            elif 'Bert' in path or 'GLUE' in path:
                 special_tokens = {
                     'pad': '[PAD]',
                     'bos': '[CLS]',
