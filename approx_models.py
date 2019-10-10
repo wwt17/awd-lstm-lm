@@ -204,6 +204,31 @@ class Transformer_Approximator(nn.Module):
         self.output_seq = output_seq
         self.bidirectional = bidirectional
         self.model = (BertEncoder if bidirectional else GPT2Decoder)(hparams=hparams)
+
+        use_pretrained = 'pretrained_model_name' in hparams
+        if use_pretrained:
+            try:
+                type_vocab_size = hparams['type_vocab_size']
+            except KeyError:
+                pass
+            else:
+                self.model.hparams.type_vocab_size = type_vocab_size
+                self.model.segment_embedder = type(self.model.segment_embedder)(
+                    vocab_size=type_vocab_size,
+                    hparams=self.model.hparams.segment_embed,
+                )
+            try:
+                position_size = hparams['position_size']
+
+            except KeyError:
+                pass
+            else:
+                self.model.hparams.position_size = position_size
+                self.model.position_embedder = type(self.model.position_embedder)(
+                    position_size=position_size,
+                    hparams=self.model.hparams.position_embed,
+                )
+
         if remove_word_embedder:
             self.model.word_embedder = tx.core.layers.Identity()
         if bidirectional:

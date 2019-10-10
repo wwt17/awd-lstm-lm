@@ -43,7 +43,10 @@ def get_config_model(config_model, vocab_size):
     config_model = {
         k: v for k, v in config_model.__dict__.items()
         if not k.startswith('__')}
-    config_model.pop('dim')
+    try:
+        config_model.pop('dim')
+    except KeyError:
+        pass
     config_model['vocab_size'] = vocab_size
     return config_model
 
