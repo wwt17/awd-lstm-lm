@@ -2,10 +2,13 @@ import os
 import traceback
 import torch
 from torch.utils.data import Dataset
+from torch.nn.utils.rnn import PackedSequence, pack_sequence
 from texar.data import Vocab
+import numpy as np
 import h5py
 
 from collections import Counter
+from typing import NamedTuple
 
 from utils import map_structure
 
@@ -81,6 +84,12 @@ def get_holistic_text(path, stage, vocab):
     return ids
 
 
+class TextAndLabel(NamedTuple):
+    token_ids: np.array
+    segment_ids: np.array
+    label_id: int
+
+
 def get_review_and_star(path, stage, vocab):
     review_tokens_file_name = '{}.review_tokens.txt'.format(stage)
     star_file_name = '{}.star.txt'.format(stage)
@@ -93,7 +102,9 @@ def get_review_and_star(path, stage, vocab):
          open(os.path.join(path, star_file_name), 'r') as star_file:
         for review_tokens, star in zip(map(str.split, review_tokens_file), map(int, star_file)):
             review_token_ids = vocab.map_tokens_to_ids_py([bos_token] + review_tokens + [eos_token])
-            examples.append((review_token_ids, star))
+            segment_ids = np.zeros(*review_token_ids.shape, dtype=np.int64)
+            example = TextAndLabel(review_token_ids, segment_ids, star)
+            examples.append(example)
     return examples
 
 
@@ -221,7 +232,7 @@ class HiddenStateDataset(Dataset):
         return hidden_state.narrow(-1, -l, l)
 
 
-class TextClassificationDataset(Dataset):
+class ListDataset(Dataset):
     def __init__(self, examples):
         self.examples = examples
 
@@ -232,8 +243,15 @@ class TextClassificationDataset(Dataset):
         return self.examples[i]
 
 
+class TextClassificationDataset(ListDataset):
+    pass
+
+
 def text_classification_collate_fn(examples):
-    reviews, stars = zip(*examples)
-    reviews = torch.nn.utils.rnn.pack_sequence(list(map(torch.from_numpy, reviews)), enforce_sorted=False)
-    stars = torch.tensor(stars)
-    return reviews, stars
+    batch = TextAndLabel(*zip(*examples))
+    token_ids = pack_sequence(list(map(torch.from_numpy, batch.token_ids)), enforce_sorted=False)
+    sorted_segment_ids = [batch.segment_ids[index] for index in token_ids.sorted_indices]
+    segment_ids = pack_sequence(list(map(torch.from_numpy, sorted_segment_ids)), enforce_sorted=True)
+    segment_ids = PackedSequence(segment_ids.data, batch_sizes=token_ids.batch_sizes, sorted_indices=token_ids.sorted_indices, unsorted_indices=token_ids.unsorted_indices)
+    label_id = torch.tensor(batch.label_id)
+    return TextAndLabel(token_ids=token_ids, segment_ids=segment_ids, label_id=label_id)

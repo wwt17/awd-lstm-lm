@@ -1,22 +1,27 @@
 import os
 import json
 import functools
+import numpy as np
 
+from data import TextAndLabel
 
 def process_texts_and_label(example, vocab, tokenize, text_keys, label_key, labels):
     tokens = [vocab.bos_token]
-    for text_key in text_keys:
+    segment_ids = [0]
+    for segment_id, text_key in enumerate(text_keys):
         text = example[text_key]
         text_tokens = tokenize(example[text_key])
         tokens.extend(text_tokens)
         tokens.append(vocab.eos_token)
+        segment_ids.extend(segment_id for _ in range(len(text_tokens) + 1))
 
     token_ids = vocab.map_tokens_to_ids_py(tokens)
+    segment_ids = np.array(segment_ids)
 
     label = example[label_key]
     label_id = labels.index(label)
 
-    return (token_ids, label_id)
+    return TextAndLabel(token_ids, segment_ids, label_id)
 
 
 process_BoolQ = functools.partial(

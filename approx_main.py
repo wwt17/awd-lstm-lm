@@ -398,10 +398,14 @@ total_params = sum(map(torch.Tensor.nelement, params))
 print('Model total # parameters:', total_params)
 
 
-def get_prediction_and_loss(x, y, teacher_output=None, get_output=None):
+def get_prediction_and_loss(data_item, teacher_output=None, get_output=None):
+    if is_classification:
+        x, segment_ids, y = data_item.token_ids, data_item.segment_ids, data_item.label_id
+    else:
+        x, y = data_item
     _embedder_fn = lambda x: embedder(x).detach()
     input = (PackedSequence(_embedder_fn(x.data), **{key: getattr(x, key) for key in ('batch_sizes', 'sorted_indices', 'unsorted_indices')}) if isinstance(x, PackedSequence) else _embedder_fn(x))
-    prediction_ = model(input)
+    prediction_ = model(input, segment_ids=segment_ids) if is_classification else model(input)
     def get_last_n(t):
         if isinstance(model, (approx_models.LSTM_Approximator, approx_models.Transformer_Approximator)) and args.output_seq:
             if args.last_n is None or not model.training:
@@ -506,10 +510,10 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
                 text_data_item, teacher_output = data_item
             else:
                 text_data_item = data_item
-            x, y = text_data_item
+            y = text_data_item[-1]
             batch_size = len(y)
             n += batch_size
-            prediction, loss, gt_ce_loss, entropies, corrects = get_prediction_and_loss(x, y, teacher_output, get_output) if args.teacher_model is not None else get_prediction_and_loss(x, y)
+            prediction, loss, gt_ce_loss, entropies, corrects = get_prediction_and_loss(text_data_item, teacher_output, get_output) if args.teacher_model is not None else get_prediction_and_loss(text_data_item)
             total_loss += loss.item() * batch_size
             if entropies is not None:
                 total_entropy += entropies.sum().item()
@@ -638,10 +642,10 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
             text_data_item, teacher_output = data_item
         else:
             text_data_item = data_item
-        x, y = text_data_item
+        y = text_data_item[-1]
         batch_size = len(y)
         optimizer.zero_grad()
-        prediction, loss, gt_ce_loss, entropies, corrects = get_prediction_and_loss(x, y, teacher_output, get_output) if args.teacher_model is not None else get_prediction_and_loss(x, y)
+        prediction, loss, gt_ce_loss, entropies, corrects = get_prediction_and_loss(text_data_item, teacher_output, get_output) if args.teacher_model is not None else get_prediction_and_loss(text_data_item)
         writer.add_scalar('{}/loss'.format(prefix), loss.item(), global_step)
         writer.add_scalar('{}/gt_ce_loss'.format(prefix), gt_ce_loss.item(), global_step)
         total_loss += loss.item() * batch_size

@@ -10,7 +10,7 @@ from weight_drop import WeightDrop
 from utils import get_model_fn
 from gpt2_decoder import GPT2Decoder
 
-from torch.nn.utils.rnn import PackedSequence
+from torch.nn.utils.rnn import PackedSequence, pad_packed_sequence
 
 import copy
 
@@ -170,7 +170,7 @@ class LSTM_Approximator(nn.Module):
         self.output_dropout = (VariationalDropout if self.output_seq else nn.Dropout)(output_dropout) if output_dropout else None
         self.output_layer = nn.Linear(self.num_directions * hidden_size, output_size) if output_size is not None else None
 
-    def forward(self, input): # input: (batch_size, sequence_length, embedding_size)
+    def forward(self, input, segment_ids=None): # input: (batch_size, sequence_length, embedding_size)
         if self.input_dropout is not None:
             input = self.input_dropout(input)
         if hasattr(self, 'input_layer'):
@@ -242,13 +242,15 @@ class Transformer_Approximator(nn.Module):
         else:
             self.model.decoder._output_layer = tx.core.layers.Identity() if output_size is None else nn.Linear(hparams['decoder']['dim'], output_size)
 
-    def forward(self, input): # input: (batch_size, sequence_length, embedding_size)
+    def forward(self, input, segment_ids=None): # input: (batch_size, sequence_length, embedding_size)
         if self.bidirectional:
             if isinstance(input, PackedSequence):
-                input, sequence_length = nn.utils.rnn.pad_packed_sequence(input, batch_first=True)
+                input, sequence_length = pad_packed_sequence(input, batch_first=True)
+                if segment_ids is not None:
+                    segment_ids, _ = pad_packed_sequence(segment_ids, batch_first=True)
             else:
                 sequence_length = None
-            output, pooled_output = self.model(input, sequence_length=sequence_length)
+            output, pooled_output = self.model(input, sequence_length=sequence_length, segment_ids=segment_ids)
             output = output if self.output_seq else pooled_output
         else:
             assert self.output_seq

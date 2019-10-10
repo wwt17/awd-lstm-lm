@@ -3,11 +3,15 @@ import torch.nn.functional as F
 import math
 import texar as tx
 from torch.nn.utils.rnn import PackedSequence
-
+from typing import NamedTuple
 
 def map_structure(f, *s):
     if isinstance(s[0], (list, tuple)) and not isinstance(s[0], PackedSequence):
-        return type(s[0])(map_structure(f, *c) for c in zip(*s))
+        res = (map_structure(f, *c) for c in zip(*s))
+        if type(s[0]) in (list, tuple):
+            return type(s[0])(res)
+        else:
+            return type(s[0])(*res)
     else:
         return f(*s)
 
