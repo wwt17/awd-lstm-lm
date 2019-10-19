@@ -13,20 +13,14 @@ from typing import NamedTuple
 from utils import map_structure
 
 
-pad_token = '<pad>'
-bos_token = '<bos>'
-eos_token = '<eos>'
-unk_token = '<unk>'
-
-
 class Corpus(object):
     def __init__(self, path, get_fn, with_pos=False):
         special_token_fn = (lambda w: w + '_' + w) if with_pos else (lambda w: w)
         vocab_filename = os.path.join(path, 'vocab.txt')
         self.vocab = Vocab(
             vocab_filename,
-            **{s: special_token_fn(globals()[s]) for s in
-               ['pad_token', 'bos_token', 'eos_token', 'unk_token']}
+            **{'{}_token'.format(s): special_token_fn('<{}>'.format(s)) for s in
+               ['pad', 'bos', 'eos', 'unk']}
         )
         # Set designated speial tokens in some cases
         if path.endswith('_bpe') or 'Bert' in path or 'GLUE' in path:
