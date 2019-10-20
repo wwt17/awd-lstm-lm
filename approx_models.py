@@ -230,7 +230,7 @@ class Transformer_Approximator(nn.Module):
                 )
 
         if remove_word_embedder:
-            self.model.word_embedder = tx.core.layers.Identity()
+            self.remove_word_embedder()
         if bidirectional:
             if output_size is not None:
                 self.model.pooler = nn.Linear(self.model._hparams.hidden_size, output_size)
@@ -241,6 +241,13 @@ class Transformer_Approximator(nn.Module):
                     )
         else:
             self.model.decoder._output_layer = tx.core.layers.Identity() if output_size is None else nn.Linear(hparams['decoder']['dim'], output_size)
+
+    @property
+    def word_embedder(self):
+        return self.model.word_embedder
+
+    def remove_word_embedder(self):
+        self.model.word_embedder = tx.core.layers.Identity()
 
     def forward(self, input, segment_ids=None): # input: (batch_size, sequence_length, embedding_size)
         if self.bidirectional:

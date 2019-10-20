@@ -363,8 +363,8 @@ if model is None:
             }[args.pooler_activation],
         )
         if use_pretrained:
-            embedder = model.model.word_embedder
-            model.model.word_embedder = tx.core.layers.Identity()
+            embedder = model.word_embedder
+            model.remove_word_embedder()
 
 set_all_requires_grad(embedder.parameters(), not args.fix_embedder)
 set_all_requires_grad(output_layer.parameters(), not args.fix_output_layer)
