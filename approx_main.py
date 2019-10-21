@@ -20,6 +20,7 @@ import model
 import approx_models
 
 from utils import map_structure, get_config_model, get_splits, get_embedder, get_embedding_size, get_output_layer, get_criterion_fn, force_reduce_lr, set_lr, cross_entropy, set_all_requires_grad
+import glue
 import superglue
 from gpt2_decoder import GPT2Decoder
 
