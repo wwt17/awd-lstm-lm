@@ -91,11 +91,12 @@ parser.add_argument('--output_layer_type', type=str, choices=['fc'], default='fc
 ## LSTM
 parser.add_argument('--bidirectional', action='store_true')
 parser.add_argument('--explicit_stack', action='store_true')
-parser.add_argument('--no_transform_output', action='store_true')
+parser.add_argument('--transform_output', action='store_true')
 ## Transformer
 parser.add_argument('--config_model', type=str,
                     help='The model configuration file to configure the model.')
-parser.add_argument('--pooler_activation', type=str, choices=['none', 'tanh'], default='none')
+parser.add_argument('--pretrained_model_name',
+                    help='the name of the pretarined model to use.')
 # Training/evaluation/test
 ## Meta
 parser.add_argument('--seed', type=int,
@@ -151,6 +152,12 @@ parser.add_argument('--get_output_hidden', action='store_true')
 args = parser.parse_args()
 
 teacher_exists = args.teacher_model is not None
+
+if args.output_hidden_path is None:
+    if teacher_exists:
+        args.output_hidden_path = os.path.join(os.path.dirname(args.teacher_model), 'output_hidden')
+    elif args.get_output_hidden:
+        args.output_hidden_path = os.path.join(args.ckpt, 'output_hidden')
 
 batch_sizes = {stage: getattr(args, '{}_batch_size'.format(stage)) for stage in ('train', 'valid', 'test')}
 
@@ -345,22 +352,19 @@ if model is None:
             skip_link=args.skip_link,
             normalization=args.normalization,
             input_transform=args.input_transform,
-            output_size=None if args.no_transform_output else output_size,
+            output_size=output_size if args.transform_output else None,
             input_dropout=args.input_dropout, hidden_dropout=args.hidden_dropout,
             output_dropout=args.output_dropout)
     elif args.model_type == 'transformer':
-        config_model = get_config_model(args.config_model, vocab_size)
-        use_pretrained = config_model['pretrained_model_name'] is not None
+        config_model = get_config_model(args.config_model, vocab_size) if args.config_model is not None else None
+        use_pretrained = args.pretrained_model_name is not None
         model = approx_models.Transformer_Approximator(
             hparams=config_model,
             output_seq=args.output_seq,
             bidirectional=args.bidirectional,
-            output_size=None if args.no_transform_output or use_pretrained else output_size,
+            output_size=output_size if args.transform_output and not use_pretrained else None,
             remove_word_embedder=not use_pretrained,
-            pooler_activation={
-                'none': None,
-                'tanh': nn.Tanh(),
-            }[args.pooler_activation],
+            pretrained_model_name=args.pretrained_model_name,
         )
         if use_pretrained:
             embedder = model.word_embedder

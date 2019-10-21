@@ -1,9 +1,11 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import math
 import texar as tx
 from torch.nn.utils.rnn import PackedSequence
 from typing import NamedTuple
+
 
 def map_structure(f, *s):
     if isinstance(s[0], (list, tuple)) and not isinstance(s[0], PackedSequence):
@@ -14,6 +16,10 @@ def map_structure(f, *s):
             return type(s[0])(*res)
     else:
         return f(*s)
+
+
+def mask_sequence_length(sequence_length, max_sequence_length):
+    return torch.arange(max_sequence_length, dtype=sequence_length.dtype, device=sequence_length.device) < sequence_length.unsqueeze(-1)
 
 
 def repackage_hidden(h):
@@ -42,16 +48,23 @@ def get_batch(source, i, seq_len):
 
 
 def get_config_model(config_model, vocab_size):
-    import importlib
-    config_model = importlib.import_module(config_model)
-    config_model = {
-        k: v for k, v in config_model.__dict__.items()
-        if not k.startswith('__')}
-    try:
-        config_model.pop('dim')
-    except KeyError:
-        pass
-    config_model['vocab_size'] = vocab_size
+    if config_model.endswith('.json'):
+        from transformers import BertConfig
+        config_model = BertConfig(config_model)
+        config_model.vocab_size = vocab_size
+
+    else:
+        import importlib
+        config_model = importlib.import_module(config_model)
+        config_model = {
+            k: v for k, v in config_model.__dict__.items()
+            if not k.startswith('__')}
+        try:
+            config_model.pop('dim')
+        except KeyError:
+            pass
+        config_model['vocab_size'] = vocab_size
+
     return config_model
 
 
@@ -148,3 +161,30 @@ def set_lr(lr_scheduler, lr):
     print('set lr to {}'.format(lr))
     for param_group in lr_scheduler.optimizer.param_groups:
         param_group['lr'] = lr
+
+
+class BertEmbeddingsWithoutWordEmbeddings(nn.Module):
+    def __init__(self, position_embeddings, token_type_embeddings, LayerNorm, dropout):
+        super(BertEmbeddingsWithoutWordEmbeddings, self).__init__()
+        self.position_embeddings = position_embeddings
+        self.token_type_embeddings = token_type_embeddings
+        self.LayerNorm = LayerNorm
+        self.dropout = dropout
+
+    def forward(self, input, token_type_ids=None, position_ids=None):
+        seq_length = input.size(1)
+        ids_shape = input.shape[:2]
+        if position_ids is None:
+            position_ids = torch.arange(seq_length, dtype=torch.long, device=input.device)
+            position_ids = position_ids.unsqueeze(0).expand(*ids_shape)
+        if token_type_ids is None:
+            token_type_ids = torch.zeros(*ids_shape)
+
+        words_embeddings = input
+        position_embeddings = self.position_embeddings(position_ids)
+        token_type_embeddings = self.token_type_embeddings(token_type_ids)
+
+        embeddings = words_embeddings + position_embeddings + token_type_embeddings
+        embeddings = self.LayerNorm(embeddings)
+        embeddings = self.dropout(embeddings)
+        return embeddings

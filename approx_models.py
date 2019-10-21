@@ -3,14 +3,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import texar as tx
-from texar.modules import BertEncoder
 
 from locked_dropout import VariationalDropout
 from weight_drop import WeightDrop
 from utils import get_model_fn
 from gpt2_decoder import GPT2Decoder
+from transformers import BertModel
 
 from torch.nn.utils.rnn import PackedSequence, pad_packed_sequence
+from utils import mask_sequence_length, BertEmbeddingsWithoutWordEmbeddings
 
 import copy
 
@@ -199,55 +200,43 @@ class LSTM_Approximator(nn.Module):
 
 
 class Transformer_Approximator(nn.Module):
-    def __init__(self, hparams, output_seq=False, bidirectional=False, output_size=None, remove_word_embedder=True, pooler_activation=nn.Tanh()):
+    def __init__(self, hparams, output_seq=False, bidirectional=False, output_size=None, remove_word_embedder=True, pretrained_model_name=None):
         super(Transformer_Approximator, self).__init__()
         self.output_seq = output_seq
         self.bidirectional = bidirectional
-        self.model = (BertEncoder if bidirectional else GPT2Decoder)(hparams=hparams)
 
-        use_pretrained = 'pretrained_model_name' in hparams
-        if use_pretrained:
-            try:
-                type_vocab_size = hparams['type_vocab_size']
-            except KeyError:
-                pass
+        if bidirectional:
+            if pretrained_model_name is not None:
+                self.model = BertModel.from_pretrained(pretrained_model_name)
+                #TODO: probably need to adjust the type_vocab_size and position_size
             else:
-                self.model.hparams.type_vocab_size = type_vocab_size
-                self.model.segment_embedder = type(self.model.segment_embedder)(
-                    vocab_size=type_vocab_size,
-                    hparams=self.model.hparams.segment_embed,
-                )
-            try:
-                position_size = hparams['position_size']
-
-            except KeyError:
-                pass
-            else:
-                self.model.hparams.position_size = position_size
-                self.model.position_embedder = type(self.model.position_embedder)(
-                    position_size=position_size,
-                    hparams=self.model.hparams.position_embed,
-                )
+                self.model = BertModel(hparams)
+        else:
+            self.model = GPT2Decoder(hparams=hparams)
 
         if remove_word_embedder:
             self.remove_word_embedder()
         if bidirectional:
-            if output_size is not None:
-                self.model.pooler = nn.Linear(self.model._hparams.hidden_size, output_size)
-                if pooler_activation is not None:
-                    self.model.pooler = nn.Sequential(
-                        self.model.pooler,
-                        pooler_activation,
-                    )
+            assert output_size is None #TODO: allow different output_size
         else:
             self.model.decoder._output_layer = tx.core.layers.Identity() if output_size is None else nn.Linear(hparams['decoder']['dim'], output_size)
 
     @property
     def word_embedder(self):
-        return self.model.word_embedder
+        if isinstance(self.model, BertModel):
+            return self.model.embeddings.word_embeddings
+
+        else:
+            return self.model.word_embedder
 
     def remove_word_embedder(self):
-        self.model.word_embedder = tx.core.layers.Identity()
+        if isinstance(self.model, BertModel):
+            embeddings = self.model.embeddings
+            self.model.embeddings = BertEmbeddingsWithoutWordEmbeddings(
+                **{s: getattr(embeddings, s) for s in ['position_embeddings', 'token_type_embeddings', 'LayerNorm', 'dropout']})
+
+        else:
+            self.model.word_embedder = tx.core.layers.Identity()
 
     def forward(self, input, segment_ids=None): # input: (batch_size, sequence_length, embedding_size)
         if self.bidirectional:
@@ -257,7 +246,11 @@ class Transformer_Approximator(nn.Module):
                     segment_ids, _ = pad_packed_sequence(segment_ids, batch_first=True)
             else:
                 sequence_length = None
-            output, pooled_output = self.model(input, sequence_length=sequence_length, segment_ids=segment_ids)
+            if sequence_length is not None:
+                attention_mask = mask_sequence_length(sequence_length, input.size(1)).to(device=input.device, dtype=torch.float)
+            else:
+                attention_mask = None
+            output, pooled_output = self.model(input, attention_mask=attention_mask, token_type_ids=segment_ids)[:2]
             output = output if self.output_seq else pooled_output
         else:
             assert self.output_seq
