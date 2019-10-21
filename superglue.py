@@ -55,7 +55,7 @@ def get_n_classes(track):
     return len(processors[track].keywords['labels'])
 
 
-def get_glue(path, stage, vocab):
+def get_superglue(path, stage, vocab):
     track = os.path.basename(path)
     assert not track.startswith('AX-') #TODO
     stage_ = {

@@ -20,7 +20,7 @@ import model
 import approx_models
 
 from utils import map_structure, get_config_model, get_splits, get_embedder, get_embedding_size, get_output_layer, get_criterion_fn, force_reduce_lr, set_lr, cross_entropy, set_all_requires_grad
-import glue
+import superglue
 from gpt2_decoder import GPT2Decoder
 
 def arg_to_list(t):
@@ -183,7 +183,12 @@ if 'yelp' in args.data:
     else:
         raise ValueError("Cannot infer number of classes from {}".format(args.data))
     get_fn = data.get_review_and_star
-elif 'GLUE' in args.data:
+elif 'SuperGLUE' in args.data:
+    is_classification = True
+    track = os.path.basename(args.data)
+    n_classes = superglue.get_n_classes(track)
+    get_fn = superglue.get_superglue
+elif 'glue_data' in args.data:
     is_classification = True
     track = os.path.basename(args.data)
     n_classes = glue.get_n_classes(track)
