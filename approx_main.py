@@ -406,16 +406,19 @@ def get_named_params():
         named_params.append(('copy_w', copy_w))
     return named_params
 
+def get_n_params(params):
+    return sum(map(torch.Tensor.nelement, set(params)))
+
 named_params = get_named_params()
 print('parameters:')
 for name, param in named_params:
     print('{}:\t{}'.format(name, param.size()))
 params = [param for name, param in named_params]
-total_params = sum(map(torch.Tensor.nelement, params))
+total_params = get_n_params(params)
 print('Model total # parameters:', total_params)
 named_main_params = get_named_main_params()
 main_params = [param for name, param in named_main_params]
-total_main_params = sum(map(torch.Tensor.nelement, main_params))
+total_main_params = get_n_params(main_params)
 print('Model total # main parameters:', total_main_params)
 
 
