@@ -368,6 +368,7 @@ if model is None:
             hparams=config_model,
             output_seq=args.output_seq,
             bidirectional=args.bidirectional,
+            input_size=embedding_size if args.input_transform else None,
             output_size=output_size if args.transform_output and not use_pretrained else None,
             remove_word_embedder=not use_pretrained,
             pretrained_model_name=args.pretrained_model_name,
@@ -391,11 +392,15 @@ if teacher_exists:
     teacher_criterion_fn = (lambda output, targets: cross_entropy(teacher_output_layer(output), targets)) if new_format_teacher else get_criterion_fn(teacher_model, teacher_criterion, is_GPT2)
     del teacher_model
 
-def get_named_params():
+def get_named_main_params():
     named_params = list(itertools.chain(model.named_parameters(), criterion.named_parameters()))
-    if args.new_embedder:
+    return named_params
+
+def get_named_params():
+    named_params = get_named_main_params()
+    if not args.fix_embedder:
         named_params.extend(embedder.named_parameters())
-    if args.new_output_layer:
+    if not args.fix_output_layer:
         named_params.extend(output_layer.named_parameters())
     if copy_w is not None:
         named_params.append(('copy_w', copy_w))
@@ -408,6 +413,10 @@ for name, param in named_params:
 params = [param for name, param in named_params]
 total_params = sum(map(torch.Tensor.nelement, params))
 print('Model total # parameters:', total_params)
+named_main_params = get_named_main_params()
+main_params = [param for name, param in named_main_params]
+total_main_params = sum(map(torch.Tensor.nelement, main_params))
+print('Model total # main parameters:', total_main_params)
 
 
 def get_prediction_and_loss(data_item, teacher_output=None, get_output=None):

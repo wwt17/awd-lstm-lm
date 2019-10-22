@@ -200,7 +200,7 @@ class LSTM_Approximator(nn.Module):
 
 
 class Transformer_Approximator(nn.Module):
-    def __init__(self, hparams, output_seq=False, bidirectional=False, output_size=None, remove_word_embedder=True, pretrained_model_name=None):
+    def __init__(self, hparams, output_seq=False, bidirectional=False, input_size=None, output_size=None, remove_word_embedder=True, pretrained_model_name=None):
         super(Transformer_Approximator, self).__init__()
         self.output_seq = output_seq
         self.bidirectional = bidirectional
@@ -216,8 +216,15 @@ class Transformer_Approximator(nn.Module):
 
         if remove_word_embedder:
             self.remove_word_embedder()
+        if input_size is not None:
+            self.input_layer = nn.Linear(input_size, hparams.hidden_size)
+        else:
+            self.input_layer = None
         if bidirectional:
-            assert output_size is None #TODO: allow different output_size
+            if output_size is not None:
+                self.output_layer = nn.Linear(hparams.hidden_size, output_size)
+            else:
+                self.output_layer = None
         else:
             self.model.decoder._output_layer = tx.core.layers.Identity() if output_size is None else nn.Linear(hparams['decoder']['dim'], output_size)
 
@@ -246,13 +253,19 @@ class Transformer_Approximator(nn.Module):
                     segment_ids, _ = pad_packed_sequence(segment_ids, batch_first=True)
             else:
                 sequence_length = None
+            if self.input_layer is not None:
+                input = self.input_layer(input)
             if sequence_length is not None:
                 attention_mask = mask_sequence_length(sequence_length, input.size(1)).to(device=input.device, dtype=torch.float)
             else:
                 attention_mask = None
             output, pooled_output = self.model(input, attention_mask=attention_mask, token_type_ids=segment_ids)[:2]
             output = output if self.output_seq else pooled_output
+            if self.output_layer is not None:
+                output = self.output_layer(output)
         else:
+            if self.input_layer is not None:
+                input = self.input_layer(input)
             assert self.output_seq
             model_fn = get_model_fn(self.model)
             output = model_fn(input, batch_first=True)
