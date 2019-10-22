@@ -253,7 +253,7 @@ class Transformer_Approximator(nn.Module):
                     segment_ids, _ = pad_packed_sequence(segment_ids, batch_first=True)
             else:
                 sequence_length = None
-            if self.input_layer is not None:
+            if hasattr(self, 'input_layer') and self.input_layer is not None:
                 input = self.input_layer(input)
             if sequence_length is not None:
                 attention_mask = mask_sequence_length(sequence_length, input.size(1)).to(device=input.device, dtype=torch.float)
@@ -261,10 +261,10 @@ class Transformer_Approximator(nn.Module):
                 attention_mask = None
             output, pooled_output = self.model(input, attention_mask=attention_mask, token_type_ids=segment_ids)[:2]
             output = output if self.output_seq else pooled_output
-            if self.output_layer is not None:
+            if hasattr(self, 'output_layer') and self.output_layer is not None:
                 output = self.output_layer(output)
         else:
-            if self.input_layer is not None:
+            if hasattr(self, 'input_layer') and self.input_layer is not None:
                 input = self.input_layer(input)
             assert self.output_seq
             model_fn = get_model_fn(self.model)
