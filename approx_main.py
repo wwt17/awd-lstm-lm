@@ -442,10 +442,10 @@ def get_prediction_and_loss(data_item, teacher_output=None, get_output=None):
     if teacher_output is not None:
         teacher_logits = output_layer(get_output(teacher_output)).detach()
 
+    logits = output_layer(prediction)
+
     assert not (args.approx_dist and args.approx_logit)
     if args.approx_dist or args.approx_logit:
-        logits = output_layer(prediction)
-
         if copy_w is not None:
             seq_len = prediction_.size(1)
             scores = torch.einsum('bik,bjk->bij', prediction_, prediction_)
@@ -469,7 +469,6 @@ def get_prediction_and_loss(data_item, teacher_output=None, get_output=None):
             log_p = logits.log_softmax(-1)
         gt_ce_loss = cross_entropy(logits, y)
         entropies = -(p * log_p).sum(-1)
-        corrects = (p.argmax(-1) == y)
         if args.approx_logit:
             assert teacher_output is not None
             loss = F.mse_loss(logits, teacher_logits)
@@ -487,7 +486,9 @@ def get_prediction_and_loss(data_item, teacher_output=None, get_output=None):
         assert teacher_output is not None
         loss = criterion(prediction, teacher_output)
         gt_ce_loss = teacher_criterion_fn(prediction, y)
-        entropies, corrects = None, None
+        entropies = None
+
+    corrects = (logits.argmax(-1) == y)
 
     return prediction, loss, gt_ce_loss, entropies, corrects
 
