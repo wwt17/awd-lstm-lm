@@ -55,7 +55,6 @@ parser.add_argument('--new_output_layer', action='store_true')
 parser.add_argument('--fix_embedder', action='store_true')
 parser.add_argument('--fix_output_layer', action='store_true')
 parser.add_argument('--model_type', type=str, choices=['mlp', 'cnn', 'lstm', 'transformer'],
-                    required=True,
                     help='Type of approximator model (mlp, cnn, lstm, transformer)')
 parser.add_argument('--copy_w', type=float)
 ## Shared
@@ -177,6 +176,7 @@ device = torch.device('cuda' if args.cuda else 'cpu')
 
 if 'yelp' in args.data:
     is_classification = True
+    is_glue = False
     if 'polarity' in args.data:
         n_classes = 2
     elif 'full' in args.data:
@@ -186,16 +186,21 @@ if 'yelp' in args.data:
     get_fn = data.get_review_and_star
 elif 'SuperGLUE' in args.data:
     is_classification = True
-    track = os.path.basename(args.data)
-    n_classes = superglue.get_n_classes(track)
+    is_glue = True
+    glue_task = os.path.basename(args.data)
+    n_classes = superglue.get_n_classes(glue_task)
     get_fn = superglue.get_superglue
+    compute_glue_metrics = None # Not Implemented
 elif 'glue_data' in args.data:
     is_classification = True
-    track = os.path.basename(args.data)
-    n_classes = glue.get_n_classes(track)
+    is_glue = True
+    glue_task = os.path.basename(args.data)
+    n_classes = glue.get_n_classes(glue_task)
     get_fn = glue.get_glue
+    compute_glue_metrics = glue.compute_glue_metrics
 else:
     is_classification = False
+    is_glue = False
     get_fn = data.get_holistic_text
 
 
@@ -490,7 +495,7 @@ def get_prediction_and_loss(data_item, teacher_output=None, get_output=None):
 
     corrects = (logits.argmax(-1) == y)
 
-    return prediction, loss, gt_ce_loss, entropies, corrects
+    return prediction, logits, loss, gt_ce_loss, entropies, corrects
 
 
 writer = SummaryWriter(os.path.join(args.ckpt, 'log'))
@@ -515,6 +520,8 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
     total_gt_ce_loss = 0.
     if args.eval_teacher_loss:
         total_teacher_loss = 0.
+    if is_glue:
+        all_logits_labels = []
 
     if output_hidden_file is not None:
         m_output = f.create_dataset('output', (len(dataset), output_size), dtype='f')
@@ -538,7 +545,9 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
             y = text_data_item[-1]
             batch_size = len(y)
             n += batch_size
-            prediction, loss, gt_ce_loss, entropies, corrects = get_prediction_and_loss(text_data_item, teacher_output, get_output) if teacher_exists else get_prediction_and_loss(text_data_item)
+            prediction, logits, loss, gt_ce_loss, entropies, corrects = get_prediction_and_loss(text_data_item, teacher_output, get_output) if teacher_exists else get_prediction_and_loss(text_data_item)
+            if is_glue:
+                all_logits_labels.append((logits.detach().cpu().numpy(), y.detach().cpu().numpy()))
             total_loss += loss.item() * batch_size
             if entropies is not None:
                 total_entropy += entropies.sum().item()
@@ -578,13 +587,31 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
     }
     pr = '{} loss={:.6f} gt_ce_loss={:6.2f} ppl={:6.2f}'.format(
         prefix, loss, gt_ce_loss, ppl)
+
     if entropy is not None:
         write_scalars['entropy'] = entropy
         pr += ' ent={:2.3f}'.format(entropy)
+
     if acc is not None:
         write_scalars['acc'] = acc
         pr += ' acc={:7.2%}'.format(acc)
+
+    if is_glue:
+        all_logits, all_labels = map(np.concatenate, zip(*all_logits_labels))
+        glue_results = compute_glue_metrics(glue_task, all_logits, all_labels)
+        pr += ' glue={'
+        first = True
+        for key, score in glue_results.items():
+            write_scalars['glue/{}'.format(key)] = score
+            if first:
+                first = False
+            else:
+                pr += ', '
+            pr += '{}={:7.2f}'.format(key, score * 100)
+        pr += '}'
+
     print(pr)
+
     if output_hidden_file is None:
         for name, value in write_scalars.items():
             writer.add_scalar('{}/{}'.format(prefix, name), value, global_step)
@@ -670,7 +697,7 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
         y = text_data_item[-1]
         batch_size = len(y)
         optimizer.zero_grad()
-        prediction, loss, gt_ce_loss, entropies, corrects = get_prediction_and_loss(text_data_item, teacher_output, get_output) if teacher_exists else get_prediction_and_loss(text_data_item)
+        prediction, logits, loss, gt_ce_loss, entropies, corrects = get_prediction_and_loss(text_data_item, teacher_output, get_output) if teacher_exists else get_prediction_and_loss(text_data_item)
         writer.add_scalar('{}/loss'.format(prefix), loss.item(), global_step)
         writer.add_scalar('{}/gt_ce_loss'.format(prefix), gt_ce_loss.item(), global_step)
         total_loss += loss.item() * batch_size
