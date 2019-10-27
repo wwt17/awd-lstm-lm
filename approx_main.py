@@ -175,7 +175,7 @@ if torch.cuda.is_available():
 device = torch.device('cuda' if args.cuda else 'cpu')
 
 if 'yelp' in args.data:
-    is_classification = True
+    is_lm = False
     is_glue = False
     if 'polarity' in args.data:
         n_classes = 2
@@ -185,21 +185,21 @@ if 'yelp' in args.data:
         raise ValueError("Cannot infer number of classes from {}".format(args.data))
     get_fn = data.get_review_and_star
 elif 'SuperGLUE' in args.data:
-    is_classification = True
+    is_lm = False
     is_glue = True
     glue_task = os.path.basename(args.data)
     n_classes = superglue.get_n_classes(glue_task)
     get_fn = superglue.get_superglue
     compute_glue_metrics = None # Not Implemented
 elif 'glue_data' in args.data:
-    is_classification = True
+    is_lm = False
     is_glue = True
     glue_task = os.path.basename(args.data)
     n_classes = glue.get_n_classes(glue_task)
     get_fn = glue.get_glue
     compute_glue_metrics = glue.compute_glue_metrics
 else:
-    is_classification = False
+    is_lm = True
     is_glue = False
     get_fn = data.get_holistic_text
 
@@ -218,7 +218,7 @@ from splitcross import SplitCrossEntropyLoss
 
 vocab_size = corpus.vocab.size
 print('vocab_size = {}'.format(vocab_size))
-if not is_classification:
+if is_lm:
     n_classes = vocab_size
 
 if teacher_exists:
@@ -251,7 +251,7 @@ else:
 def get_dataset(stage):
     raw_data = getattr(corpus, stage)
     output_seq = args.output_seq and stage == 'train'
-    if is_classification:
+    if not is_lm:
         text_dataset = data.TextClassificationDataset(raw_data)
     else:
         text_dataset = data.FixedLengthContextDataset(
@@ -269,7 +269,7 @@ def get_dataset(stage):
             predict_all_layers=args.predict_all_layers,
             predict_c=args.predict_c,
         )
-        if not is_classification:
+        if is_lm:
             n = min(len(text_dataset), len(hidden_state_dataset))
             text_dataset.start += len(text_dataset) - n
             hidden_state_dataset.start += len(hidden_state_dataset) - n
@@ -284,7 +284,7 @@ datasets = {
 }
 
 from torch.utils.data._utils.collate import default_collate
-if is_classification:
+if not is_lm:
     collate_fn = data.text_classification_collate_fn
     if teacher_exists:
         collate_fn = data.zip_collate_fn(collate_fn, default_collate)
@@ -428,13 +428,13 @@ print('Model total # main parameters:', total_main_params)
 
 
 def get_prediction_and_loss(data_item, teacher_output=None, get_output=None):
-    if is_classification:
+    if not is_lm:
         x, segment_ids, y = data_item.token_ids, data_item.segment_ids, data_item.label_id
     else:
         x, y = data_item
     _embedder_fn = lambda x: embedder(x).detach()
     input = (PackedSequence(_embedder_fn(x.data), **{key: getattr(x, key) for key in ('batch_sizes', 'sorted_indices', 'unsorted_indices')}) if isinstance(x, PackedSequence) else _embedder_fn(x))
-    prediction_ = model(input, segment_ids=segment_ids) if is_classification else model(input)
+    prediction_ = model(input, segment_ids=segment_ids) if not is_lm else model(input)
     def get_last_n(t):
         if isinstance(model, (approx_models.LSTM_Approximator, approx_models.Transformer_Approximator)) and args.output_seq:
             if args.last_n is None or not model.training:
