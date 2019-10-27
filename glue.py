@@ -32,6 +32,10 @@ def get_n_classes(track):
     return len(label_list)
 
 
+def get_output_mode(task):
+    return output_modes[task.lower()]
+
+
 def get_glue(path, stage, vocab):
     track = os.path.basename(path)
     track = track.lower()

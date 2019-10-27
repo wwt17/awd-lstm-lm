@@ -8,7 +8,7 @@ import numpy as np
 import h5py
 
 from collections import Counter
-from typing import NamedTuple
+from typing import NamedTuple, Union
 
 from utils import map_structure
 
@@ -81,7 +81,7 @@ def get_holistic_text(path, stage, vocab):
 class TextAndLabel(NamedTuple):
     token_ids: np.array
     segment_ids: np.array
-    label_id: int
+    label_id: Union[int, float]
 
 
 def get_review_and_star(path, stage, vocab):

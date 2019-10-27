@@ -143,7 +143,7 @@ parser.add_argument('--output_dropout', type=float, default=0.,
 parser.add_argument('--weight_dropout', type=float, default=0.,
                     help='amount of weight dropout to apply to the hidden matrices')
 # Logging/save
-parser.add_argument('--valid_metric', type=str, choices=['loss', 'gt_ce_loss', 'entropy', 'acc'], default='loss')
+parser.add_argument('--valid_metric', type=str, choices=['loss', 'gt_loss', 'entropy', 'acc', 'mcc', 'f1', 'acc-mm', 'pearson', 'spearman', 'corr'], default='loss')
 parser.add_argument('--eval_teacher_loss', action='store_true',
                     help='whether to evaluate the loss of the approximated model')
 parser.add_argument('--save_intermediate', action='store_true',
@@ -184,6 +184,7 @@ if 'yelp' in args.data:
     else:
         raise ValueError("Cannot infer number of classes from {}".format(args.data))
     get_fn = data.get_review_and_star
+    output_mode = 'classification'
 elif 'SuperGLUE' in args.data:
     is_lm = False
     is_glue = True
@@ -191,6 +192,7 @@ elif 'SuperGLUE' in args.data:
     n_classes = superglue.get_n_classes(glue_task)
     get_fn = superglue.get_superglue
     compute_glue_metrics = None # Not Implemented
+    output_mode = 'classification' # Set to Default
 elif 'glue_data' in args.data:
     is_lm = False
     is_glue = True
@@ -198,10 +200,12 @@ elif 'glue_data' in args.data:
     n_classes = glue.get_n_classes(glue_task)
     get_fn = glue.get_glue
     compute_glue_metrics = glue.compute_glue_metrics
+    output_mode = glue.get_output_mode(glue_task)
 else:
     is_lm = True
     is_glue = False
     get_fn = data.get_holistic_text
+    output_mode = 'classification'
 
 
 ###############################################################################
@@ -451,51 +455,67 @@ def get_prediction_and_loss(data_item, teacher_output=None, get_output=None):
 
     assert not (args.approx_dist and args.approx_logit)
     if args.approx_dist or args.approx_logit:
-        if copy_w is not None:
-            seq_len = prediction_.size(1)
-            scores = torch.einsum('bik,bjk->bij', prediction_, prediction_)
-            bias = torch.triu(torch.full([seq_len, seq_len], -1e18, device=device))
-            scores += bias
-            scores = scores.narrow(-1, 0, scores.size(-1) - 1)
-            scores = get_last_n(scores)
-            scores *= copy_w
-            logits_ = torch.cat([logits, scores], -1)
-            p_ = logits_.softmax(-1)
-            p, p_copy_seq = p_.narrow(-1, 0, vocab_size), p_.narrow(-1, vocab_size, scores.size(-1))
-            x_ = x[:, 1:]
-            if p_copy_seq.dim() > 2:
-                x_ = x_.unsqueeze(1).expand_as(p_copy_seq)
-            p = p.scatter_add(-1, x_, p_copy_seq)
-            # TODO: fix NaN or Inf in following two lines
-            log_p = p.log()
-            logits = log_p
+        if output_mode == 'classification':
+            if copy_w is not None:
+                seq_len = prediction_.size(1)
+                scores = torch.einsum('bik,bjk->bij', prediction_, prediction_)
+                bias = torch.triu(torch.full([seq_len, seq_len], -1e18, device=device))
+                scores += bias
+                scores = scores.narrow(-1, 0, scores.size(-1) - 1)
+                scores = get_last_n(scores)
+                scores *= copy_w
+                logits_ = torch.cat([logits, scores], -1)
+                p_ = logits_.softmax(-1)
+                p, p_copy_seq = p_.narrow(-1, 0, vocab_size), p_.narrow(-1, vocab_size, scores.size(-1))
+                x_ = x[:, 1:]
+                if p_copy_seq.dim() > 2:
+                    x_ = x_.unsqueeze(1).expand_as(p_copy_seq)
+                p = p.scatter_add(-1, x_, p_copy_seq)
+                # TODO: fix NaN or Inf in following two lines
+                log_p = p.log()
+                logits = log_p
+            else:
+                p = logits.softmax(-1)
+                log_p = logits.log_softmax(-1)
+            gt_ce_loss = cross_entropy(logits, y)
+            entropies = -(p * log_p).sum(-1)
+            gt_loss = gt_ce_loss
+            gt_mse_loss = None
+        elif output_mode == 'regression':
+            gt_mse_loss = F.mse_loss(logits.squeeze(-1), y)
+            entropies = None
+            gt_loss = gt_mse_loss
+            gt_ce_loss = None
         else:
-            p = logits.softmax(-1)
-            log_p = logits.log_softmax(-1)
-        gt_ce_loss = cross_entropy(logits, y)
-        entropies = -(p * log_p).sum(-1)
-        if args.approx_logit:
+            raise Exception("Unknown output_mode: {}".format(output_mode))
+        loss = gt_loss
+        L = args.approx_dist_lambda
+        if L > 0:
             assert teacher_output is not None
-            loss = F.mse_loss(logits, teacher_logits)
-        else:
-            T = args.approx_dist_temp
-            L = args.approx_dist_lambda
-            if L > 0.:
-                assert teacher_output is not None
+            if args.approx_logit:
+                approx_loss = F.mse_loss(logits, teacher_logits)
+            else:
+                T = args.approx_dist_temp
                 s = 1.
                 for d in logits.shape[1:-1]:
                     s *= d
                 kl_loss = F.kl_div((logits / T).log_softmax(-1), (teacher_logits / T).softmax(-1), reduction='batchmean') / s
-            loss = ((L * T * T) * kl_loss if L > 0. else 0.) + (1. - L) * gt_ce_loss
+                approx_loss = (T * T) * kl_loss
+            loss = L * approx_loss + (1. - L) * loss
     else:
         assert teacher_output is not None
         loss = criterion(prediction, teacher_output)
         gt_ce_loss = teacher_criterion_fn(prediction, y)
+        gt_loss = gt_ce_loss
+        gt_mse_loss = None
         entropies = None
 
-    corrects = (logits.argmax(-1) == y)
+    if output_mode == 'classification':
+        corrects = (logits.argmax(-1) == y)
+    else:
+        corrects = None
 
-    return prediction, logits, loss, gt_ce_loss, entropies, corrects
+    return prediction, logits, loss, gt_ce_loss, gt_mse_loss, entropies, corrects
 
 
 writer = SummaryWriter(os.path.join(args.ckpt, 'log'))
@@ -518,6 +538,7 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
     total_entropy = 0.
     total_correct = 0
     total_gt_ce_loss = 0.
+    total_gt_mse_loss = 0.
     if args.eval_teacher_loss:
         total_teacher_loss = 0.
     if is_glue:
@@ -545,17 +566,23 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
             y = text_data_item[-1]
             batch_size = len(y)
             n += batch_size
-            prediction, logits, loss, gt_ce_loss, entropies, corrects = get_prediction_and_loss(text_data_item, teacher_output, get_output) if teacher_exists else get_prediction_and_loss(text_data_item)
+            prediction, logits, loss, gt_ce_loss, gt_mse_loss, entropies, corrects = get_prediction_and_loss(text_data_item, teacher_output, get_output) if teacher_exists else get_prediction_and_loss(text_data_item)
             if is_glue:
                 all_logits_labels.append((logits.detach().cpu().numpy(), y.detach().cpu().numpy()))
+            postfix = ''
             total_loss += loss.item() * batch_size
             if entropies is not None:
                 total_entropy += entropies.sum().item()
             if corrects is not None:
                 total_correct += corrects.int().sum().item()
-            total_gt_ce_loss += gt_ce_loss.item() * batch_size
-            postfix = 'ppl={:.3f}'.format(
-                math.exp(total_gt_ce_loss / n))
+            if gt_ce_loss is not None:
+                total_gt_ce_loss += gt_ce_loss.item() * batch_size
+                postfix += ' ppl={:.3f}'.format(
+                    math.exp(total_gt_ce_loss / n))
+            if gt_mse_loss is not None:
+                total_gt_mse_loss += gt_mse_loss.item() * batch_size
+                postfix += ' mse={:.3f}'.format(
+                    total_gt_mse_loss / n)
             if entropies is not None:
                 postfix += ' ent={:.3f}'.format(
                     total_entropy / n)
@@ -565,10 +592,15 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
             if args.eval_teacher_loss:
                 teacher_loss = teacher_criterion_fn(get_output(teacher_output), y)
                 total_teacher_loss += teacher_loss * batch_size
-                postfix += ' teacher_ppl={:.3f}'.format(
-                    math.exp(total_teacher_loss / n))
+                if output_mode == 'classification':
+                    postfix += ' teacher_ppl={:.3f}'.format(
+                        math.exp(total_teacher_loss / n))
+                elif output_mode == 'regression':
+                    postfix += ' teacher_mse={:.3f}'.format(
+                        total_teacher_loss / n)
             if copy_w is not None:
                 postfix += ' copy_w={:.3f}'.format(copy_w.item())
+            postfix = postfix[1:]
             t.set_postfix_str(postfix)
 
             if output_hidden_file is not None:
@@ -576,25 +608,35 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
                 m[n - batch_size : n] = prediction.cpu()
 
     loss = total_loss / len(dataset)
-    entropy = total_entropy / len(dataset) if entropies is not None else None
-    gt_ce_loss = total_gt_ce_loss / len(dataset)
-    acc = total_correct / len(dataset) if corrects is not None else None
-    ppl = math.exp(gt_ce_loss)
     write_scalars = {
         'loss': loss,
-        'gt_ce_loss': gt_ce_loss,
-        'ppl': ppl,
     }
-    pr = '{} loss={:.6f} gt_ce_loss={:6.2f} ppl={:6.2f}'.format(
-        prefix, loss, gt_ce_loss, ppl)
-
-    if entropy is not None:
+    pr = '{} loss={:.6f}'.format(
+        prefix, loss)
+    if gt_ce_loss is not None:
+        gt_ce_loss = total_gt_ce_loss / len(dataset)
+        gt_loss = gt_ce_loss
+        ppl = math.exp(gt_ce_loss)
+        write_scalars['gt_ce_loss'] = gt_ce_loss
+        write_scalars['ppl'] = ppl
+        pr += ' gt_ce_loss={:6.2f} ppl={:6.2f}'.format(gt_ce_loss, ppl)
+    if gt_mse_loss is not None:
+        gt_mse_loss = total_gt_mse_loss / len(dataset)
+        gt_loss = gt_mse_loss
+        write_scalars['gt_mse_loss'] = gt_mse_loss
+        pr += ' gt_mse_loss={:.3f}'.format(gt_mse_loss)
+    if entropies is not None:
+        entropy = total_entropy / len(dataset)
         write_scalars['entropy'] = entropy
         pr += ' ent={:2.3f}'.format(entropy)
-
-    if acc is not None:
+    else:
+        entropy = None
+    if corrects is not None:
+        acc = total_correct / len(dataset)
         write_scalars['acc'] = acc
         pr += ' acc={:7.2%}'.format(acc)
+    else:
+        acc = None
 
     if is_glue:
         all_logits, all_labels = map(np.concatenate, zip(*all_logits_labels))
@@ -609,6 +651,8 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
                 pr += ', '
             pr += '{}={:7.2f}'.format(key, score * 100)
         pr += '}'
+    else:
+        glue_results = None
 
     print(pr)
 
@@ -616,7 +660,7 @@ def evaluate(dataset=datasets['valid'], batch_size=args.valid_batch_size, prefix
         for name, value in write_scalars.items():
             writer.add_scalar('{}/{}'.format(prefix, name), value, global_step)
 
-    return loss, gt_ce_loss, entropy, acc
+    return loss, gt_loss, entropy, acc, glue_results
 
 
 if args.get_output_hidden:
@@ -697,9 +741,12 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
         y = text_data_item[-1]
         batch_size = len(y)
         optimizer.zero_grad()
-        prediction, logits, loss, gt_ce_loss, entropies, corrects = get_prediction_and_loss(text_data_item, teacher_output, get_output) if teacher_exists else get_prediction_and_loss(text_data_item)
+        prediction, logits, loss, gt_ce_loss, gt_mse_loss, entropies, corrects = get_prediction_and_loss(text_data_item, teacher_output, get_output) if teacher_exists else get_prediction_and_loss(text_data_item)
         writer.add_scalar('{}/loss'.format(prefix), loss.item(), global_step)
-        writer.add_scalar('{}/gt_ce_loss'.format(prefix), gt_ce_loss.item(), global_step)
+        if gt_ce_loss is not None:
+            writer.add_scalar('{}/gt_ce_loss'.format(prefix), gt_ce_loss.item(), global_step)
+        if gt_mse_loss is not None:
+            writer.add_scalar('{}/gt_mse_loss'.format(prefix), gt_mse_loss.item(), global_step)
         total_loss += loss.item() * batch_size
         interval_nelement += y.nelement()
         interval_loss += loss.item()
@@ -749,12 +796,14 @@ def train(dataset=datasets['train'], batch_size=args.train_batch_size):
         loss, entropy))
 
 def update_valid_result(valid_result, saving=True):
-    loss, gt_ce_loss, entropy, acc = valid_result
+    loss, gt_loss, entropy, acc, glue_results = valid_result
     if saving and args.save_intermediate:
         model_save(os.path.join(args.ckpt, 'step{}.pt'.format(global_step)))
-    ori_value = locals()[args.valid_metric]
+    ori_value = locals().get(args.valid_metric, None)
+    if ori_value is None:
+        ori_value = glue_results[args.valid_metric]
     value = ori_value
-    if args.valid_metric == 'acc':
+    if args.valid_metric in ['acc', 'mcc', 'f1', 'acc-mm', 'pearson', 'spearman', 'corr']:
         value = 1. - value
     global best_valid_value
     if best_valid_value is None or value < best_valid_value:
